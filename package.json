@@ -1,0 +1,16 @@
+{
+  "name": "athena-discord-bot",
+  "version": "1.0.0",
+  "description": "Athena AI Discord Bot for DBI Nation Z",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.25.1",
+    "firebase": "^11.8.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
