@@ -111,22 +111,33 @@ async function syncUserRoleToFirebase(member) {
   }
 }
 
+let cachedKnowledge = [];
+let lastKnowledgeUpdate = 0;
+
 async function getKnowledgeBase() {
-  if (!db) return [];
+  if (!db) return cachedKnowledge;
   try {
-    const snapshot = await getDocs(collection(db, 'knowledge_base'));
+    const snapshot = await getDocs(collection(db, 'athena_knowledge'));
     const entries = [];
     snapshot.forEach(doc => {
       const data = doc.data();
       if (data.verified) {
-        entries.push(`${data.category}: ${data.content}`);
+        entries.push(`[${data.category}] ${data.topic}: ${data.content}`);
       }
     });
+    cachedKnowledge = entries;
+    lastKnowledgeUpdate = Date.now();
     return entries;
   } catch (error) {
     console.error('[Firestore] Error getting knowledge base:', error.message);
-    return [];
+    return cachedKnowledge;
   }
+}
+
+async function refreshKnowledge() {
+  const entries = await getKnowledgeBase();
+  console.log(`[Knowledge] Refreshed ${entries.length} verified entries at ${new Date().toLocaleTimeString()}`);
+  return entries;
 }
 
 function getCurrentDateTime() {
@@ -241,6 +252,16 @@ client.once(Events.ClientReady, async () => {
   }
   
   console.log('[Bot] Athena is ready and listening for messages!');
+  
+  // Initial knowledge base load
+  await refreshKnowledge();
+  
+  // Refresh knowledge base every 60 seconds
+  setInterval(async () => {
+    await refreshKnowledge();
+  }, 60000);
+  
+  console.log('[Bot] Knowledge base auto-refresh enabled (every 60 seconds)');
 });
 
 client.on('guildMemberUpdate', async (oldMember, newMember) => {
