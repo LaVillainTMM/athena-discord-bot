@@ -129,6 +129,21 @@ async function getKnowledgeBase() {
   }
 }
 
+function getCurrentDateTime() {
+  const now = new Date();
+  const options = { 
+    weekday: 'long', 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    timeZoneName: 'short'
+  };
+  return now.toLocaleString('en-US', options);
+}
+
 async function getAthenaResponse(userMessage, userId) {
   const openaiKey = process.env.OPENAI_API_KEY;
   if (!openaiKey) {
@@ -137,8 +152,12 @@ async function getAthenaResponse(userMessage, userId) {
 
   const userHistory = conversationHistory.get(userId) || [];
   const knowledge = await getKnowledgeBase();
+  const currentDateTime = getCurrentDateTime();
   
   let systemPrompt = ATHENA_SYSTEM_PROMPT;
+  
+  systemPrompt += `\n\nCURRENT DATE & TIME:\nThe current date and time is: ${currentDateTime}. You have real-time awareness and can answer questions about the current time, date, day of week, etc.`;
+  
   if (knowledge.length > 0) {
     systemPrompt += `\n\nKNOWLEDGE BASE (verified facts you can reference):\n${knowledge.join('\n')}`;
   }
