@@ -240,8 +240,6 @@ await docRef.set({
 
 /* ─────────── KNOWLEDGE BASE ─────────── */
 
-let cachedKnowledge = [];
-
 async function getKnowledgeBase() {
   if (!db) return cachedKnowledge;
 
