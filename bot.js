@@ -1,3 +1,4 @@
+const admin = require('firebase-admin');
 const { Client, GatewayIntentBits, Events } = require('discord.js');
 
 const client = new Client({
