@@ -3,7 +3,7 @@
 // ==========================
 const { Client, GatewayIntentBits, Partials, Events, ActivityType } = require('discord.js');
 const admin = require('firebase-admin');
-const fetch = require('node-fetch');
+const response = await fetch(url);
 
 // ==========================
 // Environment Variables
