@@ -6,24 +6,20 @@ const { getFirestore, collection, addDoc, serverTimestamp, doc, setDoc, getDoc, 
 const fetch = global.fetch || require('node-fetch');
 
 // Firebase Config - Set these as environment variables in your hosting platform
-const firebaseConfig = {
-  apiKey: process.env.FIREBASE_API_KEY,
-  authDomain: "athenaai-memory.firebaseapp.com",
-  projectId: "athenaai-memory",
-  storageBucket: "athenaai-memory.appspot.com",
-  messagingSenderId: process.env.FIREBASE_MESSAGING_ID,
-  appId: process.env.FIREBASE_APP_ID,
-};
-
 let db = null;
+
 try {
-  const app = initializeApp(firebaseConfig);
-  db = getFirestore(app);
-  console.log('[Firebase] Connected successfully');
+  admin.initializeApp({
+    credential: admin.credential.applicationDefault(),
+  });
+
+  db = admin.firestore();
+  console.log('[Firebase] Connected successfully (Admin SDK)');
 } catch (error) {
-  console.error('[Firebase] Connection failed:', error.message);
+  console.error('[Firebase] Admin init failed:', error.message);
   console.log('[Firebase] Bot will run without Firebase sync');
 }
+
 
 const NATION_ROLES = ['SleeperZ', 'ESpireZ', 'BoroZ', 'PsycZ'];
 
