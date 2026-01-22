@@ -1,3 +1,8 @@
+
+"dependencies": {
+  "firebase-admin": "^12.x"
+}
+
 const { Client, GatewayIntentBits, Partials, Events, ActivityType } = require('discord.js');
 const { initializeApp } = require('firebase/app');
 const { getFirestore, collection, addDoc, serverTimestamp, doc, setDoc, getDoc, getDocs } = require('firebase/firestore');
