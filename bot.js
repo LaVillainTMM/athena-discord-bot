@@ -1,39 +1,22 @@
-// ==========================
-// Imports
-// ==========================
-const { Client, GatewayIntentBits, Partials, Events, ActivityType } = require('discord.js');
-const admin = require('firebase-admin');
-const response = await fetch(url);
+const { Client, GatewayIntentBits } = require('discord.js');
 
-// ==========================
-// Environment Variables
-// ==========================
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-
-if (!DISCORD_TOKEN || !OPENAI_API_KEY) {
-  console.error('Missing required environment variables.');
-  process.exit(1);
-}
-
-// ==========================
-// Discord Client
-// ==========================
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
-  partials: [Partials.Channel],
+  intents: [GatewayIntentBits.Guilds]
 });
 
-// ==========================
-// Firebase Admin Init
-// ==========================
-let db = null;
+async function main() {
+  const url = 'https://example.com';
+  const response = await fetch(url);
+  const data = await response.json();
+  console.log(data);
 
+  await client.login(process.env.DISCORD_TOKEN);
+}
+
+main().catch(err => {
+  console.error('Fatal startup error:', err);
+  process.exit(1);
+});
 try {
   admin.initializeApp({
     credential: admin.credential.applicationDefault(),
