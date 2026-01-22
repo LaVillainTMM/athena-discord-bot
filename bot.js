@@ -75,20 +75,21 @@ async function syncUserRoleToFirebase(member) {
   const username = member.user.username.toLowerCase();
 
   try {
-    const docRef = doc(db, 'discord_users', username);
-    const existingDoc = await getDoc(docRef);
+    const docRef = db.collection('discord_users').doc(username);
+const existingDoc = await docRef.get();
 
-    await setDoc(docRef, {
-      discordId: member.user.id,
-      username: member.user.username,
-      nation,
-      quizCompleted: true,
-      syncedFromDiscord: true,
-      completedAt: existingDoc.exists()
-        ? existingDoc.data().completedAt
-        : serverTimestamp(),
-      lastSynced: serverTimestamp(),
-    }, { merge: true });
+await docRef.set({
+  discordId: member.user.id,
+  username: member.user.username,
+  nation,
+  quizCompleted: true,
+  syncedFromDiscord: true,
+  completedAt: existingDoc.exists
+    ? existingDoc.data().completedAt
+    : admin.firestore.FieldValue.serverTimestamp(),
+  lastSynced: admin.firestore.FieldValue.serverTimestamp(),
+}, { merge: true });
+
 
     console.log(`[Firestore] Synced ${member.user.username} → ${nation}`);
   } catch (error) {
