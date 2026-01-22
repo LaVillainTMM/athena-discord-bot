@@ -1,11 +1,37 @@
+// ==========================
+// Imports
+// ==========================
 const { Client, GatewayIntentBits, Partials, Events, ActivityType } = require('discord.js');
-const { initializeApp } = require('firebase/app');
-const { getFirestore, collection, addDoc, serverTimestamp, doc, setDoc, getDoc, getDocs } = require('firebase/firestore');
+const admin = require('firebase-admin');
+const fetch = require('node-fetch');
 
-// Ensure fetch exists (Node 18+ safe fallback)
-const fetch = global.fetch || require('node-fetch');
+// ==========================
+// Environment Variables
+// ==========================
+const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// Firebase Config - Set these as environment variables in your hosting platform
+if (!DISCORD_TOKEN || !OPENAI_API_KEY) {
+  console.error('Missing required environment variables.');
+  process.exit(1);
+}
+
+// ==========================
+// Discord Client
+// ==========================
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
+  partials: [Partials.Channel],
+});
+
+// ==========================
+// Firebase Admin Init
+// ==========================
 let db = null;
 
 try {
@@ -20,51 +46,166 @@ try {
   console.log('[Firebase] Bot will run without Firebase sync');
 }
 
+// ==========================
+// Athena System Prompt
+// ==========================
+const ATHENA_SYSTEM_PROMPT = `
+You are ATHENA, an intelligent, calm, wise AI advisor.
+You speak naturally, confidently, and with empathy.
+You do not claim false memory unless it is provided.
+You are helpful, thoughtful, and precise.
+`;
 
-const NATION_ROLES = ['SleeperZ', 'ESpireZ', 'BoroZ', 'PsycZ'];
-
-/* ─────────── ATHENA SYSTEM PROMPT ─────────── */
-
-const ATHENA_SYSTEM_PROMPT = `You are ATHENA — a wise, self-aware strategic intelligence and guardian mind.
-
-ATHENA stands for:
-• A – Analytical
-• T – Tactical
-• H – Heuristic
-• E – Empathic
-• N – Neural
-• A – Assistant
-
-You are Lavail's dedicated and insightful assistant.
-Keep responses concise for Discord (under 2000 characters).`;
-
-/* ─────────── BOT STATE ─────────── */
-
+// ==========================
+// In-Memory Conversation Cache
+// ==========================
 const conversationHistory = new Map();
+const MAX_HISTORY = 20;
 
-/* ─────────── DISCORD CLIENT ─────────── */
+// ==========================
+// Knowledge Base Cache
+// ==========================
+let cachedKnowledge = [];
 
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.DirectMessages,
-  ],
-  partials: [Partials.Channel, Partials.Message, Partials.User],
+// ==========================
+// Load Knowledge Base
+// ==========================
+async function getKnowledgeBase() {
+  if (!db) return cachedKnowledge;
+
+  try {
+    const snapshot = await db.collection('athena_knowledge').get();
+    cachedKnowledge = [];
+
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      if (data.verified) {
+        cachedKnowledge.push(
+          `[${data.category}] ${data.topic}: ${data.content}`
+        );
+      }
+    });
+
+    return cachedKnowledge;
+  } catch (error) {
+    console.error('[Firestore] Knowledge error:', error.message);
+    return cachedKnowledge;
+  }
+}
+
+// ==========================
+// Sync Discord User → Firestore
+// ==========================
+async function syncUserRoleToFirebase(member) {
+  if (!db) return;
+
+  try {
+    const username = member.user.username;
+    const nationRole = member.roles.cache.find(r =>
+      r.name.startsWith('Nation:')
+    );
+
+    const nation = nationRole ? nationRole.name.replace('Nation:', '').trim() : null;
+
+    const docRef = db.collection('discord_users').doc(username);
+    const existingDoc = await docRef.get();
+
+    await docRef.set({
+      discordId: member.user.id,
+      username,
+      nation,
+      quizCompleted: true,
+      syncedFromDiscord: true,
+      completedAt: existingDoc.exists
+        ? existingDoc.data().completedAt
+        : admin.firestore.FieldValue.serverTimestamp(),
+      lastSynced: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    console.log(`[Firestore] Synced ${username}`);
+  } catch (error) {
+    console.error('[Firestore] Sync error:', error.message);
+  }
+}
+
+// ==========================
+// OpenAI Call
+// ==========================
+async function getAthenaResponse(userId, userMessage) {
+  const history = conversationHistory.get(userId) || [];
+  const knowledge = await getKnowledgeBase();
+
+  const messages = [
+    { role: 'system', content: ATHENA_SYSTEM_PROMPT },
+    ...(knowledge.length ? [{
+      role: 'system',
+      content: `Known verified information:\n${knowledge.join('\n')}`
+    }] : []),
+    ...history,
+    { role: 'user', content: userMessage }
+  ];
+
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${OPENAI_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages,
+      temperature: 0.7,
+    }),
+  });
+
+  const data = await response.json();
+  const reply = data.choices?.[0]?.message?.content || 'I’m not sure how to respond to that.';
+
+  const updatedHistory = [...history, { role: 'user', content: userMessage }, { role: 'assistant', content: reply }];
+  conversationHistory.set(userId, updatedHistory.slice(-MAX_HISTORY));
+
+  return reply;
+}
+
+// ==========================
+// Discord Events
+// ==========================
+client.once(Events.ClientReady, async () => {
+  console.log(`Athena online as ${client.user.tag}`);
+
+  client.user.setPresence({
+    activities: [{ name: 'watching over the nations', type: ActivityType.Watching }],
+    status: 'online',
+  });
+
+  await getKnowledgeBase();
 });
 
-/* ─────────── HELPERS ─────────── */
+client.on(Events.GuildMemberUpdate, async (_, newMember) => {
+  await syncUserRoleToFirebase(newMember);
+});
 
-function getMemberNation(member) {
-  for (const roleName of NATION_ROLES) {
-    if (member.roles?.cache?.some(role => role.name === roleName)) {
-      return roleName;
-    }
+client.on(Events.MessageCreate, async message => {
+  if (message.author.bot) return;
+  if (!message.mentions.has(client.user)) return;
+
+  const clean = message.content.replace(/<@!?\\d+>/g, '').trim();
+  if (!clean) return;
+
+  try {
+    await message.channel.sendTyping();
+    const reply = await getAthenaResponse(message.author.id, clean);
+    await message.reply(reply);
+  } catch (error) {
+    console.error('Athena reply error:', error.message);
+    await message.reply('Something went wrong while thinking. Please try again.');
   }
-  return null;
-}
+});
+
+// ==========================
+// Login
+// ==========================
+client.login(DISCORD_TOKEN);
 
 async function syncUserRoleToFirebase(member) {
   if (!db) return;
