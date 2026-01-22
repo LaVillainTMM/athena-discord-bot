@@ -8,8 +8,11 @@
     "start": "node bot.js"
   },
   "dependencies": {
-    "discord.js": "^14.25.1",
-    "firebase": "^11.8.1"
+  "discord.js": "^14",
+  "firebase": "^10",
+  "firebase-admin": "^12",
+  "node-fetch": "^3"
+}
   },
   "engines": {
     "node": ">=18.0.0"
