@@ -1,7 +1,4 @@
 
-"dependencies": {
-  "firebase-admin": "^12.x"
-}
 {
   "name": "athena-discord-bot",
   "version": "1.0.0",
