@@ -1,4 +1,4 @@
-// bot.js — CLEAN, SAFE, RAILWAY-READY (PATCHED)
+// bot.js — CLEAN, SAFE, RAILWAY-READY
 
 import "dotenv/config";
 import admin from "firebase-admin";
@@ -14,15 +14,12 @@ import { getOrCreateAthenaUser } from "./athenaUser.js";
 
 /* ---------------- ENV VALIDATION ---------------- */
 
-if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
+if (!process.env.FIREBASE_SERVICE_ACCOUNT)
   throw new Error("FIREBASE_SERVICE_ACCOUNT missing");
-}
-if (!process.env.DISCORD_TOKEN) {
+if (!process.env.DISCORD_TOKEN)
   throw new Error("DISCORD_TOKEN missing");
-}
-if (!process.env.GOOGLE_GENAI_API_KEY) {
+if (!process.env.GOOGLE_GENAI_API_KEY)
   throw new Error("GOOGLE_GENAI_API_KEY missing");
-}
 
 /* ---------------- FIREBASE INIT ---------------- */
 
@@ -102,7 +99,6 @@ async function getAthenaResponse(content, athenaUserId) {
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.DirectMessages
@@ -123,7 +119,6 @@ client.on(Events.MessageCreate, async message => {
   const mentionsAthena = message.content.toLowerCase().includes("athena");
   if (!isDM && !mentionsAthena) return;
 
-  // 🔑 Canonical human identity
   const athenaUserId = await getOrCreateAthenaUser(message.author);
 
   await message.channel.sendTyping();
@@ -134,36 +129,3 @@ client.on(Events.MessageCreate, async message => {
 /* ---------------- LOGIN ---------------- */
 
 client.login(process.env.DISCORD_TOKEN);
-    { role: "user", content },
-    { role: "assistant", content: reply }
-  ];
-
-  conversationHistory.set(userId, updated.slice(-20));
-  return reply;
-}
-
-/* ---------------- EVENTS ---------------- */
-
-client.once(Events.ClientReady, () => {
-  console.log(`[Athena] Online as ${client.user.tag}`);
-});
-
-client.on(Events.MessageCreate, async message => {
-  if (message.author.bot) return;
-
-  const isDM = message.channel.type === ChannelType.DM;
-  const mentionsAthena = message.content.toLowerCase().includes("athena");
-
-  if (!isDM && !mentionsAthena) return;
-
-  await message.channel.sendTyping();
-  const reply = await getAthenaResponse(message.content, message.author.id);
-  await message.reply(reply);
-});
-
-/* ---------------- LOGIN ---------------- */
-
-client.login(process.env.DISCORD_TOKEN);
-
-import { getOrCreateAthenaUser } from "./athenaUser.js";
-
