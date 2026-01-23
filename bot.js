@@ -89,3 +89,5 @@ client.on(Events.MessageCreate, async message => {
 /* ---------------- LOGIN ---------------- */
 
 client.login(process.env.DISCORD_TOKEN);
+
+import { getOrCreateAthenaUser } from "./src/core/identity/athenaUser.js";
