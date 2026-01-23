@@ -1,4 +1,4 @@
-npm install @google/generative-ai
+npm install genkit@latest @genkit-ai/googleai@latest @genkit-ai/firebase@latest
 npm install firebase
 npm install firebase-admin
 npm i --save @genkit-ai/firebase
