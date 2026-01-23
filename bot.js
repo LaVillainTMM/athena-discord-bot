@@ -23,16 +23,18 @@ if (!process.env.GOOGLE_GENAI_API_KEY)
 
 /* ---------------- FIREBASE INIT ---------------- */
 
+import admin from "firebase-admin";
+
+const serviceAccount = JSON.parse(
+  process.env.FIREBASE_SERVICE_ACCOUNT.replace(/\\n/g, "\n")
+);
+
 if (!admin.apps.length) {
   admin.initializeApp({
-    credential: admin.credential.cert(
-      JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
-    ),
-    databaseURL: "https://athenaai-memory-default-rtdb.firebaseio.com"
+    credential: admin.credential.cert(serviceAccount),
   });
 }
 
-const firestore = admin.firestore();
 
 /* ---------------- GEMINI INIT ---------------- */
 
