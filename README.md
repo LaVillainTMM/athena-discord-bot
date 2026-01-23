@@ -36,3 +36,44 @@ Athena (Discord):
 ---
 
 ## 📁 Project Structure
+
+
+> User data is **never** stored in this repository.
+> All user state lives in Firebase.
+
+---
+
+## 🔐 Required Environment Variables (Railway)
+
+Set **only** the following in Railway:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
