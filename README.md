@@ -49,31 +49,51 @@ Set **only** the following in Railway:
 
 
 
+Each **human** has one `athenaUserId`, regardless of:
+- Number of Discord accounts
+- Devices
+- Platforms
 
+---
 
+## 🚀 Deployment (Railway)
 
+1. Push this repo to GitHub
+2. Create a Railway project → Deploy from GitHub
+3. Add environment variables
+4. Deploy
 
+Athena will come online automatically.
 
+---
 
+## 🛡️ Security Notes
 
+- Secrets are **never** committed
+- Firebase Admin SDK is server-only
+- API keys must be rotated if exposed
+- User voice recordings are NOT stored (features only)
 
+---
 
+## 📌 Status
 
+This repository currently supports:
+- Discord messaging
+- Gemini-based responses
+- Firebase memory
+- Identity creation (foundation)
 
+Next phases add:
+- Full quiz flow
+- Role gating
+- Cross-platform session sync
 
+---
 
+## 🧭 Philosophy
 
+Athena is not a chatbot.
+She is a **system authority**.
 
-
-
-
-
-
-
-
-
-
-
-
-
-
+Structure first. Intelligence second.
