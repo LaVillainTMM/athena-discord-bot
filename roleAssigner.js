@@ -1,5 +1,23 @@
-function assignRole(answers) {
-  let scores = {
+const QUESTION_WEIGHTS = {
+  1: {
+    "Strategy and planning": { ESpireZ: 2 },
+    "Growth and learning": { SleeperZ: 4 },
+    "Loyalty and protection": { BoroZ: 3 },
+    "Psychology and insight": { PsycZ: 1 }
+  },
+
+  2: {
+    "Direct confrontation": { BoroZ: 3 },
+    "Adapt and outmaneuver": { ESpireZ: 2 },
+    "Stand ground with allies": { SleeperZ: 1 },
+    "Observe before acting": { PsycZ: 4 }
+  }
+
+  // Continue mapping for all 55 questions
+};
+
+module.exports = function assignRole(answers) {
+  const scores = {
     SleeperZ: 0,
     ESpireZ: 0,
     BoroZ: 0,
@@ -7,15 +25,18 @@ function assignRole(answers) {
   };
 
   for (const a of answers) {
-    if (a.answer.includes("Strategy")) scores.ESpireZ++;
-    if (a.answer.includes("Growth")) scores.SleeperZ++;
-    if (a.answer.includes("Loyalty")) scores.BoroZ++;
-    if (a.answer.includes("Psychology")) scores.PsycZ++;
+    const qMap = QUESTION_WEIGHTS[a.questionId];
+    if (!qMap) continue;
+
+    const answerWeights = qMap[a.answer];
+    if (!answerWeights) continue;
+
+    for (const role in answerWeights) {
+      scores[role] += answerWeights[role];
+    }
   }
 
   return Object.keys(scores).reduce((a, b) =>
     scores[a] > scores[b] ? a : b
   );
-}
-
-module.exports = assignRole;
+};
