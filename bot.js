@@ -11,6 +11,8 @@ import {
 } from "discord.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { getOrCreateAthenaUser } from "./athenaUser.js";
+import runQuiz from "./quiz/quizRunner.js";
+import assignRole from "./quiz/roleAssigner.js";
 
 
 
