@@ -1,7 +1,7 @@
 // bot.js — CLEAN, SAFE, RAILWAY-READY
 
 import "dotenv/config";
-import admin from "firebase-admin";
+
 import {
   Client,
   GatewayIntentBits,
@@ -9,46 +9,23 @@ import {
   Partials,
   ChannelType
 } from "discord.js";
+
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { admin, firestore } from "./firebase.js";
 import { getOrCreateAthenaUser } from "./athenaUser.js";
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
 
-
-
-const NATION_ROLES = ["SleeperZ", "ESpireZ", "BoroZ", "PsycZ"];
-
-
-if (!member.roles.cache.some(r => r.name.endsWith("NationZ"))) {
-  await member.send(
-    "You must complete the DBI Quiz to gain full access to the server."
-  );
-}
-
-
-
 /* ---------------- ENV VALIDATION ---------------- */
 
-if (!process.env.FIREBASE_SERVICE_ACCOUNT)
-  throw new Error("FIREBASE_SERVICE_ACCOUNT missing");
 if (!process.env.DISCORD_TOKEN)
   throw new Error("DISCORD_TOKEN missing");
 if (!process.env.GOOGLE_GENAI_API_KEY)
   throw new Error("GOOGLE_GENAI_API_KEY missing");
 
-/* ---------------- FIREBASE INIT ---------------- */
+/* ---------------- CONSTANTS ---------------- */
 
-const serviceAccount = JSON.parse(
-  process.env.FIREBASE_SERVICE_ACCOUNT.replace(/\\n/g, "\n")
-);
-
-if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-  });
-}
-
-const firestore = admin.firestore();
+const NATION_ROLES = ["SleeperZ", "ESpireZ", "BoroZ", "PsycZ"];
 
 /* ---------------- GEMINI INIT ---------------- */
 
@@ -56,44 +33,23 @@ const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GENAI_API_KEY);
 const model = genAI.getGenerativeModel({
   model: "gemini-1.5-pro",
   systemInstruction:
-    "You are ATHENA — calm, intelligent, disciplined, and authoritative. You guide users with clarity and purpose."
+    "You are ATHENA — calm, intelligent, disciplined, and authoritative."
+});
+
+/* ---------------- DISCORD CLIENT ---------------- */
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.MessageContent
+  ],
+  partials: [Partials.Channel]
 });
 
 /* ---------------- FIRESTORE MEMORY ---------------- */
-
-
-
-client.on("guildMemberAdd", async member => {
-  if (!member.roles.cache.some(r => r.name.endsWith("Z"))) {
-    await member.send(
-      "Welcome. You must complete the DBI Quiz to access the server."
-    );
-  }
-});
-
-
-
-const runQuiz = require("./quiz/quizRunner");
-const assignRole = require("./quiz/roleAssigner");
-
-client.on("messageCreate", async message => {
-  if (message.content === "!start-quiz") {
-    const answers = await runQuiz(message.author);
-    const roleName = assignRole(answers);
-
-    const role = message.guild.roles.cache.find(
-      r => r.name === roleName
-    );
-
-    const member = await message.guild.members.fetch(message.author.id);
-    await member.roles.add(role);
-
-    await message.author.send(
-      `Quiz complete. You have been assigned to **${roleName}**.`
-    );
-  }
-});
-
 
 async function loadConversation(athenaUserId) {
   const snap = await firestore
@@ -123,17 +79,12 @@ async function saveMessage(athenaUserId, role, content) {
     });
 }
 
+/* ---------------- GUILD JOIN QUIZ ---------------- */
 
-
-
-
-const runQuiz = require("./quiz/quizRunner");
-const assignRole = require("./quiz/roleAssigner");
-
-client.on("guildMemberAdd", async member => {
+client.on(Events.GuildMemberAdd, async member => {
   try {
-    const hasNationRole = member.roles.cache.some(r =>
-      ["SleeperZ", "ESpireZ", "BoroZ", "PsycZ"].includes(r.name)
+    const hasNationRole = member.roles.cache.some(role =>
+      NATION_ROLES.includes(role.name)
     );
 
     if (hasNationRole) return;
@@ -145,16 +96,8 @@ client.on("guildMemberAdd", async member => {
     const answers = await runQuiz(member.user);
     const roleName = assignRole(answers);
 
-    const role = member.guild.roles.cache.find(
-      r => r.name === roleName
-    );
-
-    if (!role) {
-      await member.send(
-        "An error occurred assigning your role. Please contact an admin."
-      );
-      return;
-    }
+    const role = member.guild.roles.cache.find(r => r.name === roleName);
+    if (!role) throw new Error("Role not found");
 
     await member.roles.add(role);
 
@@ -162,16 +105,9 @@ client.on("guildMemberAdd", async member => {
       `Quiz complete.\nYou have been assigned to **${roleName}**.\nAccess granted.`
     );
   } catch (err) {
-    console.error("Quiz error:", err);
+    console.error("guildMemberAdd error:", err);
   }
 });
-
-
-
-
-
-
-
 
 /* ---------------- AI RESPONSE ---------------- */
 
@@ -194,76 +130,7 @@ async function getAthenaResponse(content, athenaUserId) {
   return reply;
 }
 
-/* ---------------- DISCORD CLIENT ---------------- */
-
-const { Client, GatewayIntentBits } = require("discord.js");
-
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.MessageContent
-  ]
-});
-
-/* ---------------- EVENTS ---------------- */
-
-client.once(Events.ClientReady, () => {
-  console.log(`[Athena] Online as ${client.user.tag}`);
-});
-
-
-
-const runQuiz = require("./quiz/quizRunner");
-const assignRole = require("./quiz/roleAssigner");
-
-const NATION_ROLES = ["SleeperZ", "ESpireZ", "BoroZ", "PsycZ"];
-
-client.on("guildMemberAdd", async member => {
-  try {
-    const hasNationRole = member.roles.cache.some(role =>
-      NATION_ROLES.includes(role.name)
-    );
-
-    if (hasNationRole) return;
-
-    await member.send(
-      "Welcome to DBI.\n\n" +
-      "You must complete the DBI Quiz to gain full access to the server.\n" +
-      "The quiz will begin now."
-    );
-
-    const answers = await runQuiz(member.user);
-    const roleName = assignRole(answers);
-
-    const role = member.guild.roles.cache.find(
-      r => r.name === roleName
-    );
-
-    if (!role) {
-      await member.send(
-        "There was an issue assigning your role. Please contact an admin."
-      );
-      return;
-    }
-
-    await member.roles.add(role);
-
-    await member.send(
-      `Quiz complete.\nYou have been assigned to **${roleName}**.\nAccess unlocked.`
-    );
-  } catch (error) {
-    console.error("guildMemberAdd error:", error);
-  }
-});
-
-
-
-
-
-
+/* ---------------- MESSAGE HANDLER ---------------- */
 
 client.on(Events.MessageCreate, async message => {
   if (message.author.bot) return;
@@ -277,6 +144,12 @@ client.on(Events.MessageCreate, async message => {
   await message.channel.sendTyping();
   const reply = await getAthenaResponse(message.content, athenaUserId);
   await message.reply(reply);
+});
+
+/* ---------------- READY ---------------- */
+
+client.once(Events.ClientReady, () => {
+  console.log(`[Athena] Online as ${client.user.tag}`);
 });
 
 /* ---------------- LOGIN ---------------- */
