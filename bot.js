@@ -12,6 +12,16 @@ import {
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { getOrCreateAthenaUser } from "./athenaUser.js";
 
+
+
+if (!member.roles.cache.some(r => r.name.endsWith("NationZ"))) {
+  await member.send(
+    "You must complete the DBI Quiz to gain full access to the server."
+  );
+}
+
+
+
 /* ---------------- ENV VALIDATION ---------------- */
 
 if (!process.env.FIREBASE_SERVICE_ACCOUNT)
