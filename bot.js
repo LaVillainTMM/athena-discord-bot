@@ -14,6 +14,9 @@ import { getOrCreateAthenaUser } from "./athenaUser.js";
 
 
 
+const NATION_ROLES = ["SleeperZ", "ESpireZ", "BoroZ", "PsycZ"];
+
+
 if (!member.roles.cache.some(r => r.name.endsWith("NationZ"))) {
   await member.send(
     "You must complete the DBI Quiz to gain full access to the server."
