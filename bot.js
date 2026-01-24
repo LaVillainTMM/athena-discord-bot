@@ -36,7 +36,6 @@ if (!process.env.GOOGLE_GENAI_API_KEY)
 
 /* ---------------- FIREBASE INIT ---------------- */
 
-
 const serviceAccount = JSON.parse(
   process.env.FIREBASE_SERVICE_ACCOUNT.replace(/\\n/g, "\n")
 );
@@ -47,6 +46,7 @@ if (!admin.apps.length) {
   });
 }
 
+const firestore = admin.firestore();
 
 /* ---------------- GEMINI INIT ---------------- */
 
