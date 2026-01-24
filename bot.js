@@ -57,6 +57,40 @@ const model = genAI.getGenerativeModel({
 
 /* ---------------- FIRESTORE MEMORY ---------------- */
 
+
+
+client.on("guildMemberAdd", async member => {
+  if (!member.roles.cache.some(r => r.name.endsWith("Z"))) {
+    await member.send(
+      "Welcome. You must complete the DBI Quiz to access the server."
+    );
+  }
+});
+
+
+
+const runQuiz = require("./quiz/quizRunner");
+const assignRole = require("./quiz/roleAssigner");
+
+client.on("messageCreate", async message => {
+  if (message.content === "!start-quiz") {
+    const answers = await runQuiz(message.author);
+    const roleName = assignRole(answers);
+
+    const role = message.guild.roles.cache.find(
+      r => r.name === roleName
+    );
+
+    const member = await message.guild.members.fetch(message.author.id);
+    await member.roles.add(role);
+
+    await message.author.send(
+      `Quiz complete. You have been assigned to **${roleName}**.`
+    );
+  }
+});
+
+
 async function loadConversation(athenaUserId) {
   const snap = await firestore
     .collection("athena_ai")
