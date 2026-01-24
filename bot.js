@@ -36,7 +36,6 @@ if (!process.env.GOOGLE_GENAI_API_KEY)
 
 /* ---------------- FIREBASE INIT ---------------- */
 
-import admin from "firebase-admin";
 
 const serviceAccount = JSON.parse(
   process.env.FIREBASE_SERVICE_ACCOUNT.replace(/\\n/g, "\n")
