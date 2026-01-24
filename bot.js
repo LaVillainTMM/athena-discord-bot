@@ -195,14 +195,16 @@ async function getAthenaResponse(content, athenaUserId) {
 
 /* ---------------- DISCORD CLIENT ---------------- */
 
+const { Client, GatewayIntentBits } = require("discord.js");
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.DirectMessages
-  ],
-  partials: [Partials.Channel]
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.MessageContent
+  ]
 });
 
 /* ---------------- EVENTS ---------------- */
@@ -210,6 +212,57 @@ const client = new Client({
 client.once(Events.ClientReady, () => {
   console.log(`[Athena] Online as ${client.user.tag}`);
 });
+
+
+
+const runQuiz = require("./quiz/quizRunner");
+const assignRole = require("./quiz/roleAssigner");
+
+const NATION_ROLES = ["SleeperZ", "ESpireZ", "BoroZ", "PsycZ"];
+
+client.on("guildMemberAdd", async member => {
+  try {
+    const hasNationRole = member.roles.cache.some(role =>
+      NATION_ROLES.includes(role.name)
+    );
+
+    if (hasNationRole) return;
+
+    await member.send(
+      "Welcome to DBI.\n\n" +
+      "You must complete the DBI Quiz to gain full access to the server.\n" +
+      "The quiz will begin now."
+    );
+
+    const answers = await runQuiz(member.user);
+    const roleName = assignRole(answers);
+
+    const role = member.guild.roles.cache.find(
+      r => r.name === roleName
+    );
+
+    if (!role) {
+      await member.send(
+        "There was an issue assigning your role. Please contact an admin."
+      );
+      return;
+    }
+
+    await member.roles.add(role);
+
+    await member.send(
+      `Quiz complete.\nYou have been assigned to **${roleName}**.\nAccess unlocked.`
+    );
+  } catch (error) {
+    console.error("guildMemberAdd error:", error);
+  }
+});
+
+
+
+
+
+
 
 client.on(Events.MessageCreate, async message => {
   if (message.author.bot) return;
