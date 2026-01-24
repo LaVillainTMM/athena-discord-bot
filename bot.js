@@ -119,6 +119,56 @@ async function saveMessage(athenaUserId, role, content) {
     });
 }
 
+
+
+
+
+const runQuiz = require("./quiz/quizRunner");
+const assignRole = require("./quiz/roleAssigner");
+
+client.on("guildMemberAdd", async member => {
+  try {
+    const hasNationRole = member.roles.cache.some(r =>
+      ["SleeperZ", "ESpireZ", "BoroZ", "PsycZ"].includes(r.name)
+    );
+
+    if (hasNationRole) return;
+
+    await member.send(
+      "Welcome to DBI.\n\nYou must complete the DBI Quiz to gain full access."
+    );
+
+    const answers = await runQuiz(member.user);
+    const roleName = assignRole(answers);
+
+    const role = member.guild.roles.cache.find(
+      r => r.name === roleName
+    );
+
+    if (!role) {
+      await member.send(
+        "An error occurred assigning your role. Please contact an admin."
+      );
+      return;
+    }
+
+    await member.roles.add(role);
+
+    await member.send(
+      `Quiz complete.\nYou have been assigned to **${roleName}**.\nAccess granted.`
+    );
+  } catch (err) {
+    console.error("Quiz error:", err);
+  }
+});
+
+
+
+
+
+
+
+
 /* ---------------- AI RESPONSE ---------------- */
 
 async function getAthenaResponse(content, athenaUserId) {
