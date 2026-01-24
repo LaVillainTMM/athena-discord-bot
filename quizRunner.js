@@ -1,3 +1,10 @@
+
+const snapshot = await db.ref(`quizResponses/${user.id}`).once("value");
+if (snapshot.exists() && snapshot.val().completed) {
+  return snapshot.val().answers;
+}
+
+
 const quizData = require("./quizData");
 const db = require("../firebase");
 
