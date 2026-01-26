@@ -5,7 +5,6 @@ const QUESTION_WEIGHTS = {
     "Loyalty and protection": { BoroZ: 3 },
     "Psychology and insight": { PsycZ: 1 }
   },
-
   2: {
     "Direct confrontation": { BoroZ: 3 },
     "Adapt and outmaneuver": { ESpireZ: 2 },
@@ -13,10 +12,9 @@ const QUESTION_WEIGHTS = {
     "Observe before acting": { PsycZ: 4 }
   }
 
-  // Continue mapping for all 55 questions
 };
 
-module.exports = function assignRole(answers) {
+export default function assignRole(answers) {
   const scores = {
     SleeperZ: 0,
     ESpireZ: 0,
@@ -32,11 +30,11 @@ module.exports = function assignRole(answers) {
     if (!answerWeights) continue;
 
     for (const role in answerWeights) {
-      scores[role] += answerWeights[role];
+      scores[role] += answerWeights[role]
     }
   }
 
   return Object.keys(scores).reduce((a, b) =>
     scores[a] > scores[b] ? a : b
   );
-};
+}
