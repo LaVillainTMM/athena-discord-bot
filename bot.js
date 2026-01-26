@@ -1,14 +1,5 @@
-// bot.js — CLEAN, SAFE, RAILWAY-READY
-
 import "dotenv/config";
-
-import {
-  Client,
-  GatewayIntentBits,
-  Events,
-  Partials,
-  ChannelType
-} from "discord.js";
+import { Client, GatewayIntentBits, Events, Partials, ChannelType } from "discord.js";
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { admin, firestore } from "./firebase.js";
@@ -16,28 +7,19 @@ import { getOrCreateAthenaUser } from "./athenaUser.js";
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
 
-/* ---------------- ENV VALIDATION ---------------- */
 
-if (!process.env.DISCORD_TOKEN)
-  throw new Error("DISCORD_TOKEN missing");
-if (!process.env.GOOGLE_GENAI_API_KEY)
-  throw new Error("GOOGLE_GENAI_API_KEY missing");
 
-/* ---------------- CONSTANTS ---------------- */
-
+if (!process.env.DISCORD_TOKEN) throw new Error("DISCORD_TOKEN missing");
+if (!process.env.GOOGLE_GENAI_API_KEY) throw new Error("GOOGLE_GENAI_API_KEY missing");
 const NATION_ROLES = ["SleeperZ", "ESpireZ", "BoroZ", "PsycZ"];
 
 /* ---------------- GEMINI INIT ---------------- */
-
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GENAI_API_KEY);
 const model = genAI.getGenerativeModel({
   model: "gemini-1.5-pro",
-  systemInstruction:
-    "You are ATHENA — calm, intelligent, disciplined, and authoritative."
+  systemInstruction: "You are ATHENA — calm, intelligent, disciplined, and authoritative. Your name is Athena Nerissa."
 });
-
-/* ---------------- DISCORD CLIENT ---------------- */
-
+    /* ---------------- DISCORD CLIENT ---------------- */
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -61,7 +43,6 @@ async function loadConversation(athenaUserId) {
     .orderBy("ts", "asc")
     .limit(20)
     .get();
-
   return snap.docs.map(d => d.data());
 }
 
@@ -78,32 +59,21 @@ async function saveMessage(athenaUserId, role, content) {
       ts: admin.firestore.FieldValue.serverTimestamp()
     });
 }
-
 /* ---------------- GUILD JOIN QUIZ ---------------- */
-
 client.on(Events.GuildMemberAdd, async member => {
   try {
-    const hasNationRole = member.roles.cache.some(role =>
-      NATION_ROLES.includes(role.name)
-    );
-
+    const hasNationRole = member.roles.cache.some(role => NATION_ROLES.includes(role.name));
     if (hasNationRole) return;
 
-    await member.send(
-      "Welcome to DBI.\n\nYou must complete the DBI Quiz to gain full access."
-    );
+    await member.send("Welcome to DBI.\n\nYou must complete the DBI Quiz to gain full access.");
 
     const answers = await runQuiz(member.user);
     const roleName = assignRole(answers);
-
     const role = member.guild.roles.cache.find(r => r.name === roleName);
     if (!role) throw new Error("Role not found");
-
     await member.roles.add(role);
 
-    await member.send(
-      `Quiz complete.\nYou have been assigned to **${roleName}**.\nAccess granted.`
-    );
+    await member.send(`Quiz complete.\nYou have been assigned to **${roleName}**.\nAccess granted.`);
   } catch (err) {
     console.error("guildMemberAdd error:", err);
   }
