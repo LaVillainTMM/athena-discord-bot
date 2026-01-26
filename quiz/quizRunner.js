@@ -1,24 +1,22 @@
+import quizData from "./quizData.js";
+import { rtdb as db } from "../firebase.js";
 
-const snapshot = await db.ref(`quizResponses/${user.id}`).once("value");
-if (snapshot.exists() && snapshot.val().completed) {
-  return snapshot.val().answers;
-}
+export default async function runQuiz(user) {
+  const snapshot = await db.ref(`quizResponses/${user.id}`).once("value");
+  if (snapshot.exists() && snapshot.val().completed) {
+    return snapshot.val().answers;
+  }
 
-
-const quizData = require("./quizData");
-const db = require("../firebase");
-
-async function runQuiz(user) {
   const answers = [];
-
   for (const q of quizData) {
-    const dm = await user.send(
+    await user.send(
       `**Question ${q.id}**\n${q.question}\n\n` +
       q.options.map((o, i) => `${i + 1}. ${o}`).join("\n")
     );
 
-    const filter = m => m.author.id === user.id;
-    const collected = await dm.channel.awaitMessages({
+    const filter = m => m.author.id === user.id;  
+    const dmChannel = await user.createDM();
+    const collected = await dmChannel.awaitMessages({
       filter,
       max: 1,
       time: 120000,
@@ -39,5 +37,3 @@ async function runQuiz(user) {
 
   return answers;
 }
-
-module.exports = runQuiz;
