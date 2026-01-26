@@ -1,5 +1,7 @@
 import quizData from "./quizData.js";
-import { rtdb as db } from "../firebase.js";
+import { admin, firestore } from "../firebase.js";
+
+const db = admin.database();
 
 export default async function runQuiz(user) {
   const snapshot = await db.ref(`quizResponses/${user.id}`).once("value");
