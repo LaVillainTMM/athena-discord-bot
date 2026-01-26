@@ -16,12 +16,12 @@ if (!admin.apps.length) {
 
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
+    databaseURL: "https://athenaai-memory-default-rtdb.firebaseio.com"
   });
 }
 
 /**
  * Export initialized services
  */
-const firestore = admin.firestore();
-
-export { admin, firestore };
+const rtdb = admin.database();
+export { admin, firestore, rtdb };
