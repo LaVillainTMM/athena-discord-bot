@@ -1,4 +1,4 @@
-module.exports = [
+export default [
   {
     id: 1,
     question: "When working in a group, what matters most to you?",
@@ -20,5 +20,4 @@ module.exports = [
     ]
   }
 
-  // Continue until all 55 questions
 ];
