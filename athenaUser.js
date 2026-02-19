@@ -1,17 +1,7 @@
 // AthenaUser.js — ESM, Firestore, Railway-ready
 
 import { v4 as uuidv4 } from "uuid";
-import admin from "firebase-admin";
-
-/**
- * Get Firestore instance (singleton-safe)
- */
-function getFirestore() {
-  if (!admin.apps.length) {
-    throw new Error("Firebase not initialized before Firestore access");
-  }
-  return admin.firestore();
-}
+import { admin, firestore } from "./firebase.js";
 
 /**
  * Get or create an Athena User (canonical human identity)
@@ -19,20 +9,16 @@ function getFirestore() {
  * @returns {Promise<string>} athenaUserId
  */
 export async function getOrCreateAthenaUser(discordUser) {
-  const firestore = getFirestore();
-
   const accountsRef = firestore
     .collection("athena_ai")
     .doc("accounts")
     .collection("discord");
 
-  // Fast path
   const existing = await accountsRef.doc(discordUser.id).get();
   if (existing.exists) {
     return existing.data().athenaUserId;
   }
 
-  // Transaction-safe creation
   return await firestore.runTransaction(async tx => {
     const recheck = await tx.get(accountsRef.doc(discordUser.id));
     if (recheck.exists) return recheck.data().athenaUserId;
@@ -45,7 +31,6 @@ export async function getOrCreateAthenaUser(discordUser) {
       .collection("humans")
       .doc(athenaUserId);
 
-    // Core profile with linked Discord IDs
     tx.set(userRoot.collection("profile").doc("core"), {
       displayName: discordUser.username,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -54,7 +39,6 @@ export async function getOrCreateAthenaUser(discordUser) {
       linkedDiscordIds: [discordUser.id],
     });
 
-    // Map Discord ID to Athena ID
     tx.set(accountsRef.doc(discordUser.id), {
       athenaUserId,
       username: discordUser.username,
@@ -66,10 +50,9 @@ export async function getOrCreateAthenaUser(discordUser) {
 }
 
 /**
- * Optional: link an additional Discord ID to an existing Athena user
+ * Link an additional Discord ID to an existing Athena user
  */
 export async function linkDiscordId(athenaUserId, discordId) {
-  const firestore = getFirestore();
   const coreRef = firestore
     .collection("athena_ai")
     .doc("users")

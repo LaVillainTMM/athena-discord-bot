@@ -1,7 +1,5 @@
 import quizData from "./quizData.js";
-import { admin, firestore } from "../firebase.js";
-
-const db = admin.database();
+import { rtdb as db } from "../firebase.js";
 
 export default async function runQuiz(user) {
   const snapshot = await db.ref(`quizResponses/${user.id}`).once("value");
@@ -11,24 +9,37 @@ export default async function runQuiz(user) {
 
   const answers = [];
   for (const q of quizData) {
+    const optionsList = q.options.map((o, i) => `${i + 1}. ${o}`).join("\n");
     await user.send(
-      `**Question ${q.id}**\n${q.question}\n\n` +
-      q.options.map((o, i) => `${i + 1}. ${o}`).join("\n")
+      `**Question ${q.id} of ${quizData.length}**\n${q.question}\n\n${optionsList}\n\n_Reply with the number of your answer._`
     );
 
-    const filter = m => m.author.id === user.id;  
     const dmChannel = await user.createDM();
-    const collected = await dmChannel.awaitMessages({
-      filter,
-      max: 1,
-      time: 120000,
-      errors: ["time"]
-    });
+    const filter = m => m.author.id === user.id;
 
-    answers.push({
-      questionId: q.id,
-      answer: collected.first().content
-    });
+    try {
+      const collected = await dmChannel.awaitMessages({
+        filter,
+        max: 1,
+        time: 120000,
+        errors: ["time"]
+      });
+
+      const response = collected.first().content.trim();
+      const choiceIndex = parseInt(response) - 1;
+
+      const selectedOption = (choiceIndex >= 0 && choiceIndex < q.options.length)
+        ? q.options[choiceIndex]
+        : response;
+
+      answers.push({
+        questionId: q.id,
+        answer: selectedOption
+      });
+    } catch (err) {
+      await user.send("You took too long to respond. Please rejoin the server to try again.");
+      throw new Error("Quiz timed out");
+    }
   }
 
   await db.ref(`quizResponses/${user.id}`).set({
