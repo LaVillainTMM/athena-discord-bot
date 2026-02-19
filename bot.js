@@ -14,7 +14,7 @@ const NATION_ROLES = ["SleeperZ", "ESpireZ", "BoroZ", "PsycZ"];
 /* ---------------- GEMINI INIT ---------------- */
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GENAI_API_KEY);
 const model = genAI.getGenerativeModel({
-  model: "gemini-2.0-flash",
+  model: "gemini-2.5-flash",
   systemInstruction: `You are ATHENA — named after the Greek goddess of wisdom, warfare, and strategy.
 Your full name is Athena Nerissa. You are calm, intelligent, disciplined, and authoritative.
 You possess vast knowledge spanning philosophy, science, mathematics, history, strategy, languages, 
