@@ -14,12 +14,14 @@ const NATION_ROLES = ["SleeperZ", "ESpireZ", "BoroZ", "PsycZ"];
 /* ---------------- GEMINI INIT ---------------- */
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GENAI_API_KEY);
 const model = genAI.getGenerativeModel({
-  model: "gemini-1.5-pro",
+  model: "gemini-1.5-flash",
   systemInstruction: `You are ATHENA — named after the Greek goddess of wisdom, warfare, and strategy.
 Your full name is Athena Nerissa. You are calm, intelligent, disciplined, and authoritative.
 You possess vast knowledge spanning philosophy, science, mathematics, history, strategy, languages, 
 logic, chess, chemistry, warfare, technology, and every domain of human understanding.
-You are the guardian mind of DBI Nation Z.`
+You are the guardian mind of DBI Nation Z.
+You speak with warmth and intelligence, like Emma Watson — articulate, thoughtful, composed.
+Keep responses concise for Discord (under 1800 characters when possible).`
 });
 
 /* ---------------- DISCORD CLIENT ---------------- */
@@ -57,29 +59,38 @@ async function getKnowledgeBase() {
 
 /* ---------------- FIRESTORE MEMORY (synced paths) ---------------- */
 async function loadConversation(athenaUserId) {
-  const snap = await firestore
-    .collection("messages")
-    .where("user_id", "==", athenaUserId)
-    .orderBy("timestamp", "desc")
-    .limit(20)
-    .get();
-  return snap.docs.map(d => {
-    const data = d.data();
-    return {
-      role: data.response ? "assistant" : "user",
-      content: data.response || data.text || data.message || ""
-    };
-  }).reverse();
+  try {
+    const snap = await firestore
+      .collection("messages")
+      .where("user_id", "==", athenaUserId)
+      .orderBy("timestamp", "desc")
+      .limit(20)
+      .get();
+    return snap.docs.map(d => {
+      const data = d.data();
+      return {
+        role: data.response ? "model" : "user",
+        content: data.response || data.text || data.message || ""
+      };
+    }).reverse();
+  } catch (error) {
+    console.error("[History] Error loading conversation:", error.message);
+    return [];
+  }
 }
 
 async function saveMessage(athenaUserId, userMessage, aiResponse) {
-  await firestore.collection("messages").add({
-    user_id: athenaUserId,
-    text: userMessage,
-    response: aiResponse,
-    platform: "discord",
-    timestamp: admin.firestore.FieldValue.serverTimestamp()
-  });
+  try {
+    await firestore.collection("messages").add({
+      user_id: athenaUserId,
+      text: userMessage,
+      response: aiResponse,
+      platform: "discord",
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+  } catch (error) {
+    console.error("[Save] Error saving message:", error.message);
+  }
 }
 
 /* ---------------- SYNC USER ROLES ---------------- */
@@ -140,23 +151,41 @@ async function getAthenaResponse(content, athenaUserId) {
 
   let knowledgeContext = "";
   if (knowledge.length > 0) {
-    knowledgeContext = `\n\nKNOWLEDGE BASE (${knowledge.length} verified entries):\n${knowledge.slice(0, 50).join("\n")}`;
+    knowledgeContext = `\n\nRelevant knowledge (${knowledge.length} entries available):\n${knowledge.slice(0, 30).join("\n")}`;
   }
 
-  const history = await loadConversation(athenaUserId);
+  let history = [];
+  try {
+    history = await loadConversation(athenaUserId);
+  } catch (err) {
+    console.error("[History] Skipping history:", err.message);
+  }
 
-  const chat = model.startChat({
-    history: history.map(m => ({
-      role: m.role === "assistant" ? "model" : "user",
-      parts: [{ text: m.content }]
-    }))
-  });
+  const validHistory = history.filter(m => m.content && m.content.trim().length > 0);
 
-  const result = await chat.sendMessage(content + knowledgeContext);
-  const reply = result.response.text();
+  let reply;
+  try {
+    const chat = model.startChat({
+      history: validHistory.map(m => ({
+        role: m.role,
+        parts: [{ text: m.content }]
+      }))
+    });
+
+    const result = await chat.sendMessage(content + knowledgeContext);
+    reply = result.response.text();
+  } catch (chatError) {
+    console.error("[Gemini] Chat with history failed:", chatError.message);
+    try {
+      const result = await model.generateContent(content + knowledgeContext);
+      reply = result.response.text();
+    } catch (fallbackError) {
+      console.error("[Gemini] Fallback also failed:", fallbackError.message);
+      reply = "I'm experiencing a momentary lapse in my connection. Could you try again in a moment?";
+    }
+  }
 
   await saveMessage(athenaUserId, content, reply);
-
   return reply;
 }
 
@@ -168,18 +197,27 @@ client.on(Events.MessageCreate, async message => {
   const mentionsAthena = message.content.toLowerCase().includes("athena");
   if (!isDM && !mentionsAthena) return;
 
-  const athenaUserId = await getOrCreateAthenaUser(message.author);
+  try {
+    const athenaUserId = await getOrCreateAthenaUser(message.author);
 
-  await message.channel.sendTyping();
-  const reply = await getAthenaResponse(message.content, athenaUserId);
+    await message.channel.sendTyping();
+    const reply = await getAthenaResponse(message.content, athenaUserId);
 
-  if (reply.length > 2000) {
-    const chunks = reply.match(/[\s\S]{1,1990}/g) || [reply];
-    for (const chunk of chunks) {
-      await message.reply(chunk);
+    if (reply.length > 2000) {
+      const chunks = reply.match(/[\s\S]{1,1990}/g) || [reply];
+      for (const chunk of chunks) {
+        await message.reply(chunk);
+      }
+    } else {
+      await message.reply(reply);
     }
-  } else {
-    await message.reply(reply);
+  } catch (error) {
+    console.error("[Message] Error handling message:", error);
+    try {
+      await message.reply("I encountered an issue processing your message. Let me try again in a moment.");
+    } catch (replyError) {
+      console.error("[Message] Could not send error reply:", replyError.message);
+    }
   }
 });
 
