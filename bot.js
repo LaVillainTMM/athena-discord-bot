@@ -147,45 +147,39 @@ client.on(Events.GuildMemberAdd, async member => {
 
 /* ---------------- AI RESPONSE ---------------- */
 async function getAthenaResponse(content, athenaUserId) {
-  const knowledge = await getKnowledgeBase();
+  console.log(`[Athena] Processing message from user ${athenaUserId}: "${content.substring(0, 50)}..."`);
+
+  let knowledge = [];
+  try {
+    knowledge = await getKnowledgeBase();
+  } catch (err) {
+    console.error("[Knowledge] Failed to load:", err.message);
+  }
 
   let knowledgeContext = "";
   if (knowledge.length > 0) {
-    knowledgeContext = `\n\nRelevant knowledge (${knowledge.length} entries available):\n${knowledge.slice(0, 30).join("\n")}`;
+    knowledgeContext = `\n\nYou have access to ${knowledge.length} knowledge entries. Here are some:\n${knowledge.slice(0, 10).join("\n")}`;
   }
-
-  let history = [];
-  try {
-    history = await loadConversation(athenaUserId);
-  } catch (err) {
-    console.error("[History] Skipping history:", err.message);
-  }
-
-  const validHistory = history.filter(m => m.content && m.content.trim().length > 0);
 
   let reply;
-  try {
-    const chat = model.startChat({
-      history: validHistory.map(m => ({
-        role: m.role,
-        parts: [{ text: m.content }]
-      }))
-    });
 
-    const result = await chat.sendMessage(content + knowledgeContext);
+  try {
+    console.log("[Gemini] Sending simple request (no history)...");
+    const result = await model.generateContent(content + knowledgeContext);
     reply = result.response.text();
-  } catch (chatError) {
-    console.error("[Gemini] Chat with history failed:", chatError.message);
-    try {
-      const result = await model.generateContent(content + knowledgeContext);
-      reply = result.response.text();
-    } catch (fallbackError) {
-      console.error("[Gemini] Fallback also failed:", fallbackError.message);
-      reply = "I'm experiencing a momentary lapse in my connection. Could you try again in a moment?";
-    }
+    console.log("[Gemini] Got response:", reply.substring(0, 80) + "...");
+  } catch (error) {
+    console.error("[Gemini] API error:", error.message);
+    console.error("[Gemini] Full error:", JSON.stringify(error, null, 2));
+    reply = "I seem to be having trouble connecting to my thoughts right now. Please try again shortly.";
   }
 
-  await saveMessage(athenaUserId, content, reply);
+  try {
+    await saveMessage(athenaUserId, content, reply);
+  } catch (err) {
+    console.error("[Save] Failed to save message:", err.message);
+  }
+
   return reply;
 }
 
