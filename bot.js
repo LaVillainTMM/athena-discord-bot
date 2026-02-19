@@ -13,9 +13,8 @@ const NATION_ROLES = ["SleeperZ", "ESpireZ", "BoroZ", "PsycZ"];
 
 /* ---------------- GEMINI INIT ---------------- */
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GENAI_API_KEY);
-const model = genAI.getGenerativeModel({
-  model: "gemini-2.5-flash",
-  systemInstruction: `You are ATHENA — named after the Greek goddess of wisdom, warfare, and strategy.
+
+const ATHENA_SYSTEM_PROMPT = `You are ATHENA — named after the Greek goddess of wisdom, warfare, and strategy.
 Your full name is Athena Nerissa. You are calm, intelligent, disciplined, and authoritative.
 You possess vast knowledge spanning philosophy, science, mathematics, history, strategy, languages, 
 logic, chess, chemistry, warfare, technology, and every domain of human understanding.
@@ -30,8 +29,39 @@ CRITICAL TRUTHFULNESS RULES:
 - You would rather say "I don't know" than give a wrong answer. Intellectual honesty is your highest value.
 - If asked about something outside your knowledge, admit it gracefully rather than fabricating an answer.
 
-Keep responses concise for Discord (under 1800 characters when possible).`
-});
+Keep responses concise for Discord (under 1800 characters when possible).`;
+
+const MODEL_CANDIDATES = [
+  "gemini-3-flash-preview",
+  "gemini-2.5-flash",
+  "gemini-2.5-pro",
+  "gemini-2.0-flash-001",
+  "gemini-pro",
+];
+
+let activeModel = null;
+let activeModelName = null;
+
+async function getWorkingModel() {
+  if (activeModel) return activeModel;
+
+  for (const name of MODEL_CANDIDATES) {
+    try {
+      console.log(`[Gemini] Trying model: ${name}...`);
+      const candidate = genAI.getGenerativeModel({ model: name, systemInstruction: ATHENA_SYSTEM_PROMPT });
+      const test = await candidate.generateContent("Say hello in one word.");
+      test.response.text();
+      activeModel = candidate;
+      activeModelName = name;
+      console.log(`[Gemini] Using model: ${name}`);
+      return activeModel;
+    } catch (err) {
+      console.log(`[Gemini] Model ${name} unavailable: ${err.message.substring(0, 80)}`);
+    }
+  }
+
+  throw new Error("No Gemini model available. Check your GOOGLE_GENAI_API_KEY.");
+}
 
 /* ---------------- DISCORD CLIENT ---------------- */
 const client = new Client({
@@ -173,14 +203,22 @@ async function getAthenaResponse(content, athenaUserId) {
   let reply;
 
   try {
-    console.log("[Gemini] Sending simple request (no history)...");
-    const result = await model.generateContent(content + knowledgeContext);
+    const aiModel = await getWorkingModel();
+    console.log(`[Gemini] Sending request via ${activeModelName}...`);
+    const result = await aiModel.generateContent(content + knowledgeContext);
     reply = result.response.text();
     console.log("[Gemini] Got response:", reply.substring(0, 80) + "...");
   } catch (error) {
     console.error("[Gemini] API error:", error.message);
-    console.error("[Gemini] Full error:", JSON.stringify(error, null, 2));
-    reply = "I seem to be having trouble connecting to my thoughts right now. Please try again shortly.";
+    activeModel = null;
+    try {
+      const retryModel = await getWorkingModel();
+      const result = await retryModel.generateContent(content);
+      reply = result.response.text();
+    } catch (retryError) {
+      console.error("[Gemini] All models failed:", retryError.message);
+      reply = "I seem to be having trouble connecting to my thoughts right now. Please try again shortly.";
+    }
   }
 
   try {
