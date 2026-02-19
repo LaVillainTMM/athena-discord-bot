@@ -1,43 +1,63 @@
 import admin from "firebase-admin";
 
+function buildFromEnvVars() {
+  const projectId = process.env.FIREBASE_PROJECT_ID;
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+  const privateKey = process.env.FIREBASE_PRIVATE_KEY;
+
+  if (projectId && clientEmail && privateKey) {
+    return {
+      type: "service_account",
+      project_id: projectId,
+      private_key: privateKey.replace(/\\n/g, "\n"),
+      client_email: clientEmail,
+    };
+  }
+  return null;
+}
+
 function parseServiceAccount(raw) {
-  try { return JSON.parse(raw); } catch {}
-  try { return JSON.parse(raw.replace(/\\n/g, "\n")); } catch {}
-  try { return JSON.parse(Buffer.from(raw, "base64").toString("utf-8")); } catch {}
+  if (!raw) return null;
 
-  try {
-    const fixed = raw
-      .replace(/(\s*)(\w+)\s*:/g, '$1"$2":')
-      .replace(/:\s*'([^']*)'/g, ': "$1"')
-      .replace(/,\s*}/g, '}')
-      .replace(/,\s*]/g, ']');
-    return JSON.parse(fixed);
-  } catch {}
+  const attempts = [
+    () => JSON.parse(raw),
+    () => JSON.parse(raw.replace(/\\n/g, "\n")),
+    () => JSON.parse(Buffer.from(raw, "base64").toString("utf-8")),
+    () => {
+      const fixed = raw.replace(/(['"])?(\w+)(['"])?\s*:/g, '"$2":');
+      return JSON.parse(fixed);
+    },
+    () => new Function("return (" + raw + ")")(),
+  ];
 
-  try {
-    return new Function("return (" + raw + ")")();
-  } catch {}
-
+  for (const attempt of attempts) {
+    try {
+      const result = attempt();
+      if (result && result.project_id) return result;
+    } catch {}
+  }
   return null;
 }
 
 if (!admin.apps.length) {
-  const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
-  if (!raw) {
-    console.error("[Firebase] FIREBASE_SERVICE_ACCOUNT env var is missing!");
-    process.exit(1);
+  let serviceAccount = buildFromEnvVars();
+
+  if (!serviceAccount) {
+    serviceAccount = parseServiceAccount(process.env.FIREBASE_SERVICE_ACCOUNT);
   }
 
-  const serviceAccount = parseServiceAccount(raw);
   if (!serviceAccount || !serviceAccount.project_id) {
-    console.error("[Firebase] Cannot parse FIREBASE_SERVICE_ACCOUNT.");
-    console.error("[Firebase] The value must be valid JSON from your Firebase service account key file.");
-    console.error("[Firebase] Expected format: {\"type\":\"service_account\",\"project_id\":\"...\", ...}");
-    console.error("[Firebase] First 80 chars received:", raw.substring(0, 80));
+    console.error("[Firebase] Could not load service account credentials.");
+    console.error("[Firebase] Option 1: Set FIREBASE_SERVICE_ACCOUNT as a single-line JSON string");
+    console.error("[Firebase]   Copy your .json file, remove all newlines, paste as one line");
+    console.error("[Firebase] Option 2: Set these 3 separate env vars instead:");
+    console.error("[Firebase]   FIREBASE_PROJECT_ID=your-project-id");
+    console.error("[Firebase]   FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxx@project.iam.gserviceaccount.com");
+    console.error("[Firebase]   FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nMIIE...\\n-----END PRIVATE KEY-----\\n");
     process.exit(1);
   }
 
-  console.log("[Firebase] Parsed service account for project:", serviceAccount.project_id);
+  console.log("[Firebase] Initialized for project:", serviceAccount.project_id);
 
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
