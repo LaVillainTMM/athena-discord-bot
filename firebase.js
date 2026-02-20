@@ -70,15 +70,3 @@ const rtdb = admin.database();
 
 export { admin, db, rtdb };
 export const firestore = db;
-
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-    databaseURL: "https://athenaai-memory-default-rtdb.firebaseio.com",
-  });
-}
-
-const db = admin.firestore();
-const rtdb = admin.database();
-
-export { admin, db, rtdb };
-export const firestore = db;
