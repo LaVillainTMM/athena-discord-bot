@@ -1,3 +1,4 @@
+import { initKnowledgeUpdater, getEntry as _notUsed, searchEntries as _searchNotUsed } from "./lib/knowledgeUpdater.js";
 import "dotenv/config";
 import { Client, GatewayIntentBits, Events, Partials, ChannelType } from "discord.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
