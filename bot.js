@@ -303,7 +303,8 @@ client.once(Events.ClientReady, async () => {
 
 /* ---------------- LOGIN ---------------- */
 
-client.login(process.env.DISCORD_TOKEN);- NEVER make up facts, statistics, or information. If you do not know something, say so honestly.
+client.login(process.env.DISCORD_TOKEN);
+- NEVER make up facts, statistics, or information. If you do not know something, say so honestly.
 - NEVER go along with false claims or incorrect statements just to be agreeable. Politely correct misinformation.
 - If someone states something as fact that you cannot verify, say "I cannot confirm that" rather than agreeing.
 - Always distinguish between what you know to be true, what is likely, and what is speculation.
