@@ -2,6 +2,7 @@
 import "dotenv/config";
 import { Client, GatewayIntentBits } from "discord.js";
 import { firestore, admin } from "./firebase.js";
+import { Timestamp } from "firebase-admin/firestore";
 
 if (!process.env.DISCORD_TOKEN) throw new Error("DISCORD_TOKEN missing");
 
@@ -11,6 +12,16 @@ const client = new Client({
 
 // optional: backfill only messages after this date (ISO string)
 const BACKFILL_FROM = process.env.BACKFILL_FROM || null;
+
+async function getCentralUserId(discordId) {
+  const snap = await firestore
+    .collection("athena_ai")
+    .where("platforms.discord.id", "==", discordId)
+    .limit(1)
+    .get();
+  if (snap.empty) return null;
+  return snap.docs[0].id; // document ID == central user UID
+}
 
 async function backfillGuildMessages() {
   console.log("[Backfill] Starting message backfill...");
@@ -34,12 +45,22 @@ async function backfillGuildMessages() {
         if (!fetched || fetched.size === 0) break;
 
         const batch = [];
+
         for (const msg of fetched.values()) {
           if (msg.author.bot) continue;
-
           if (BACKFILL_FROM && msg.createdAt < new Date(BACKFILL_FROM)) continue;
 
+          const userDocId = await getCentralUserId(msg.author.id);
+          if (!userDocId) {
+            console.warn(`[Backfill] No central user found for ${msg.author.username}`);
+            continue;
+          }
+
+          const timestamp = Timestamp.fromDate(msg.createdAt);
+
           batch.push({
+            user_uid: userDocId,
+            platform: "discord",
             user_id: msg.author.id,
             username: msg.author.username,
             content: msg.content,
@@ -47,9 +68,9 @@ async function backfillGuildMessages() {
             guild_name: guild.name,
             channel_id: channel.id,
             channel_name: channel.name,
-            timestamp: msg.createdAt,
-            fetchedAtUTC: new Date(),
-            platform: "discord",
+            timestamp: timestamp,
+            timezone_offset_minutes: msg.createdAt.getTimezoneOffset(),
+            fetchedAtUTC: Timestamp.now(),
           });
         }
 
@@ -59,6 +80,13 @@ async function backfillGuildMessages() {
           slice.forEach(doc => {
             const ref = firestore.collection("messages").doc();
             batchWrite.set(ref, doc);
+
+            // also update user message stats
+            const userRef = firestore.collection("athena_ai").doc(doc.user_uid);
+            batchWrite.update(userRef, {
+              "message_stats.total_messages": admin.firestore.FieldValue.increment(1),
+              "message_stats.last_message": doc.timestamp,
+            });
           });
           await batchWrite.commit();
           console.log(`[Backfill] Wrote ${slice.length} messages to Firestore`);
