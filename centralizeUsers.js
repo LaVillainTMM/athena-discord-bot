@@ -1,80 +1,87 @@
-// centralizeUsers.js
+// centralizeAllUsers.js
 import "dotenv/config";
 import { firestore, admin } from "./firebase.js";
 import { v4 as uuidv4 } from "uuid";
 import { Timestamp } from "firebase-admin/firestore";
 
 async function centralizeUsers() {
-  console.log("[Centralize] Starting Athena AI user centralization...");
+  console.log("[Centralize] Starting Athena AI cross-platform centralization...");
 
   const athenaCollection = firestore.collection("athena_ai");
-  const discordUsersCol = firestore.collection("discord_users");
 
-  const snapshot = await discordUsersCol.get();
+  // --------------------- Helper function ---------------------
+  async function processPlatform(platformName, collectionName, idField) {
+    const snap = await firestore.collection(collectionName).get();
+    for (const doc of snap.docs) {
+      const data = doc.data();
 
-  for (const doc of snapshot.docs) {
-    const discordData = doc.data();
+      // Find existing user by platform ID
+      const existingSnap = await athenaCollection
+        .where(`platforms.${platformName}.${idField}`, "==", data[idField])
+        .limit(1)
+        .get();
 
-    // search existing user by Discord ID
-    const existingSnap = await athenaCollection
-      .where("platforms.discord.id", "==", discordData.id)
-      .limit(1)
-      .get();
-
-    let userDocRef;
-    if (existingSnap.empty) {
-      const newUserUid = uuidv4();
-      userDocRef = athenaCollection.doc();
-      await userDocRef.set({
-        user_uid: newUserUid,
-        display_name: discordData.username,
-        platforms: {
-          discord: {
-            id: discordData.id,
-            username: discordData.username,
-            guilds: discordData.guilds || [],
-            roles: discordData.roles || [],
-            last_active: discordData.last_active
-              ? Timestamp.fromDate(new Date(discordData.last_active))
-              : Timestamp.now(),
-          },
-        },
-        timezone: discordData.timezone || "UTC",
-        utc_offset_minutes: discordData.utc_offset_minutes || 0,
-        created_at: Timestamp.now(),
-        updated_at: Timestamp.now(),
-        message_stats: {
-          total_messages: 0,
-          last_message: null,
-        },
-      });
-      console.log(`[Centralize] Created new user: ${discordData.username}`);
-    } else {
-      userDocRef = existingSnap.docs[0].ref;
-      const existingData = existingSnap.docs[0].data();
-      await userDocRef.set(
-        {
+      let userDocRef;
+      if (existingSnap.empty) {
+        // New user
+        const newUserUid = uuidv4();
+        userDocRef = athenaCollection.doc();
+        await userDocRef.set({
+          user_uid: newUserUid,
+          display_name: data.display_name || data.username || `${platformName}User`,
           platforms: {
-            ...existingData.platforms, // preserve other platforms
-            discord: {
-              id: discordData.id,
-              username: discordData.username,
-              guilds: discordData.guilds || [],
-              roles: discordData.roles || [],
-              last_active: discordData.last_active
-                ? Timestamp.fromDate(new Date(discordData.last_active))
+            [platformName]: {
+              ...data,
+              last_active: data.last_active
+                ? Timestamp.fromDate(new Date(data.last_active))
                 : Timestamp.now(),
             },
           },
+          timezone: data.timezone || "UTC",
+          utc_offset_minutes: data.utc_offset_minutes || 0,
+          created_at: Timestamp.now(),
           updated_at: Timestamp.now(),
-        },
-        { merge: true }
-      );
-      console.log(`[Centralize] Updated user: ${discordData.username}`);
+          message_stats: {
+            total_messages: 0,
+            last_message: null,
+          },
+        });
+        console.log(`[Centralize] Created new user (${platformName}): ${data.display_name || data.username}`);
+      } else {
+        // Existing user — merge platform data
+        userDocRef = existingSnap.docs[0].ref;
+        const existingData = existingSnap.docs[0].data();
+
+        await userDocRef.set(
+          {
+            platforms: {
+              ...existingData.platforms,
+              [platformName]: {
+                ...data,
+                last_active: data.last_active
+                  ? Timestamp.fromDate(new Date(data.last_active))
+                  : Timestamp.now(),
+              },
+            },
+            updated_at: Timestamp.now(),
+          },
+          { merge: true }
+        );
+        console.log(`[Centralize] Updated user (${platformName}): ${data.display_name || data.username}`);
+      }
     }
   }
 
-  console.log("[Centralize] Athena AI centralization complete.");
+  // --------------------- Discord ---------------------
+  await processPlatform("discord", "discord_users", "id");
+
+  // --------------------- Mobile ---------------------
+  await processPlatform("mobile", "mobile_users", "device_id");
+
+  // --------------------- Desktop ---------------------
+  await processPlatform("desktop", "desktop_users", "device_id");
+
+  console.log("[Centralize] Athena AI cross-platform centralization complete.");
   process.exit(0);
 }
 
