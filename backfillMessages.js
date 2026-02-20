@@ -9,6 +9,9 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
 });
 
+// optional: backfill only messages after this date (ISO string)
+const BACKFILL_FROM = process.env.BACKFILL_FROM || null;
+
 async function backfillGuildMessages() {
   console.log("[Backfill] Starting message backfill...");
 
@@ -32,8 +35,9 @@ async function backfillGuildMessages() {
 
         const batch = [];
         for (const msg of fetched.values()) {
-          // skip bots if you want
           if (msg.author.bot) continue;
+
+          if (BACKFILL_FROM && msg.createdAt < new Date(BACKFILL_FROM)) continue;
 
           batch.push({
             user_id: msg.author.id,
@@ -44,12 +48,11 @@ async function backfillGuildMessages() {
             channel_id: channel.id,
             channel_name: channel.name,
             timestamp: msg.createdAt,
-            timezone_offset: msg.createdAt.getTimezoneOffset(), // minutes
+            fetchedAtUTC: new Date(),
             platform: "discord",
           });
         }
 
-        // Firestore batch write (up to 500 docs per batch)
         while (batch.length > 0) {
           const slice = batch.splice(0, 500);
           const batchWrite = firestore.batch();
@@ -61,8 +64,8 @@ async function backfillGuildMessages() {
           console.log(`[Backfill] Wrote ${slice.length} messages to Firestore`);
         }
 
-        lastId = fetched.last().id;
-      } while (fetched.size === 100); // continue paging
+        lastId = fetched.last()?.id;
+      } while (fetched.size === 100);
 
       console.log(`[Backfill] Finished channel: ${channel.name}`);
     }
