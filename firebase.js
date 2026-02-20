@@ -70,12 +70,6 @@ const rtdb = admin.database();
 
 export { admin, db, rtdb };
 export const firestore = db;
-    console.error("[Firebase]   FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxx@project.iam.gserviceaccount.com");
-    console.error("[Firebase]   FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nMIIE...\\n-----END PRIVATE KEY-----\\n");
-    process.exit(1);
-  }
-
-  console.log("[Firebase] Initialized for project:", serviceAccount.project_id);
 
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
