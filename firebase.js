@@ -1,14 +1,5 @@
 import admin from "firebase-admin";
 // after const firestore = admin.firestore(); OR after importing { firestore } from "./firebase.js"
-const knowledgeOptions = {
-  collection: process.env.KNOWLEDGE_COLLECTION || "knowledge_entries",
-  intervalMs: +(process.env.KNOWLEDGE_REFRESH_INTERVAL_MS || 5 * 60 * 1000)
-};
-
-const knowledgeAPI = await initKnowledgeUpdater(firestore, knowledgeOptions);
-// destructure conveniences
-const { getEntry, searchEntries, getAllEntries, subscribe: subscribeKnowledge } = knowledgeAPI;
-
 function buildFromEnvVars() {
   const projectId = process.env.FIREBASE_PROJECT_ID;
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
