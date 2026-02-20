@@ -184,8 +184,8 @@ export default [
     question: "What did you think of the test?",
     options: [
       "Too Long"
-      "Too Short",
-      "More Depth",
+      "Too Short"
+      "More Depth"
       "It's Fine"
     ]
   },
