@@ -305,7 +305,10 @@ client.once(Events.ClientReady, async () => {
 
   console.log(`[Athena] Online as ${client.user.tag}`);
 
-  await initKnowledgeUpdater(firestore);
+  await initKnowledgeUpdater(firestore, {
+  collection: "athena_knowledge",
+  intervalMs: 5 * 60 * 1000
+});
 
   const knowledge = await getKnowledgeBase();
 
