@@ -44,6 +44,171 @@ export default [
     question: "What is most important to you?",
     options: [
       "Strength/Power/Status",
+      "Improvement",
+      "Benevolence",
+      "Understanding"
+    ]
+  },
+  {
+    id: 6,
+    question: "Does joining DBI means committing to accountability?",
+    options: [
+      "It should",
+      "Yes",
+      "No",
+      "Accountability should be mandatory?"
+    ]
+  },
+  {
+    id: 7,
+    question: "What should you do before reacting emotionally?",
+    options: [
+      "Channel my emotions into something positive",
+      "Contemplate the entire situation",
+      "Wonder if it's really called for or needed for the situation",
+      "I normally react then think"
+    ]
+  },
+  {
+    id: 8,
+    question: "What should you do if a rule is unclear?",
+    options: [
+      "Abide by it to the best of my knowledge",
+      "Ask a senior or veteran member for understanding",
+      "Rules?",
+      "I'm a lone wolf, I follow my own rules"
+    ]
+  },
+  {
+    id: 9,
+    question: "Leadership should be used how?",
+    options: [
+      "With an Iron Fist",
+      "With a Kind and Stern hand",
+      "With Confidence and Experience",
+      "The Leadership doesn't matter"
+    ]
+  },
+  {
+    id: 10,
+    question: "Mistakes should be used as what?",
+    options: [
+      "A learning opportunity",
+      "A way of knowing that you don't know as much as you presume",
+      "A way of getting Feedback",
+      "Something to quietly notice and accept"
+    ]
+  },
+  {
+    id: 11,
+    question: "What should you do after breaking a rule?",
+    options: [
+      "If I broke them there was a reason",
+      "What Rules?",
+      "Report the incident",
+      "See if it put me in bad standings"
+    ]
+  },
+  {
+    id: 12,
+    question: "Do you value honesty or appearance?",
+    options: [
+      "Appearance distracts me",
+      "Does it look better with the lights on or off?",
+      "I need to have both",
+      "Neither, I stand with integrity"
+    ]
+  },
+  {
+    id: 13,
+    question: "Do you believe Patience contributes to growth?",
+    options: [
+      "Undoubtedly",
+      "Yes",
+      "No",
+      "Only in moderation"
+    ]
+  },
+  {
+    id: 14,
+    question: "You believe having a disciplined mindset comes from what?",
+    options: [
+      "Learning to align your actions with your purpose",
+      "Learning to commit oneself to something other than oneself",
+      "When a person understands that every action plants a seed",
+      "When someone learns to respect their mind, body, and purpose"
+    ]
+  },
+  {
+    id: 15,
+    question: "Where do you stand on helping others?",
+    options: [
+      "They help me, I'll help them",
+      "I'll help anyone who asks",
+      "Not everyone should be helped",
+      "I'll help if I can"
+    ]
+  },
+  {
+    id: 16,
+    question: "Can you protect without attachment?",
+    options: [
+      "Not many can overcome the wall that is attachment in its simplest form",
+      "What does protecting have to do with attachment?",
+      "I do a lot of things without attachment",
+      "I do as I must when it is needed of me"
+    ]
+  },
+  {
+    id: 17,
+    question: "When is it time for war?",
+    options: [
+      "When boundaries are broken",
+      "After you have had time to be properly prepared",
+      "War can happen at any time, the real question is who is prepared for it",
+      "Why would anyone want to go to war?"
+    ]
+  },
+  {
+    id: 18,
+    question: "How long does peace last?",
+    options: [
+      "Peace ends every time I blink",
+      "To have true peace, there must also be unrest",
+      "I've only just recently noticed a lapse of peace",
+      "Peace only dwells within the mind"
+    ]
+  },
+  {
+    id: 19,
+    question: "What did you think of the test?",
+    options: [
+      "Too Long",
+      "Too Short",
+      "More Depth",
+      "It's Fine"
+    ]
+  },
+  {
+    id: 20,
+    question: "What's Next?",
+    options: [
+      "I don't know",
+      "VC calls with Friends",
+      "Form and Rule reading",
+      "Find new gamers"
+    ]
+  }
+];      "Everyone uniting for one common belief/goal",
+      "Standing together rather right or wrong",
+      "Helping each other grow with their strengths"
+    ]
+  },
+  {
+    id: 5,
+    question: "What is most important to you?",
+    options: [
+      "Strength/Power/Status",
       "improvement",
       "Benevolence",
       "Understanding"
