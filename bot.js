@@ -1,40 +1,309 @@
-import { initKnowledgeUpdater, getEntry as _notUsed, searchEntries as _searchNotUsed } from "./lib/knowledgeUpdater.js";
 import "dotenv/config";
 import { Client, GatewayIntentBits, Events, Partials, ChannelType } from "discord.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+
 import { admin, firestore } from "./firebase.js";
 import { getOrCreateAthenaUser } from "./athenaUser.js";
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
 
+import { initKnowledgeUpdater } from "./lib/knowledgeUpdater.js";
+
+/* ---------------- ENV VALIDATION ---------------- */
+
 if (!process.env.DISCORD_TOKEN) throw new Error("DISCORD_TOKEN missing");
 if (!process.env.GOOGLE_GENAI_API_KEY) throw new Error("GOOGLE_GENAI_API_KEY missing");
+
+/* ---------------- CONSTANTS ---------------- */
 
 const NATION_ROLES = ["SleeperZ", "ESpireZ", "BoroZ", "PsycZ"];
 
 /* ---------------- GEMINI INIT ---------------- */
+
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GENAI_API_KEY);
 
-const ATHENA_SYSTEM_PROMPT = `You are ATHENA — named after the Greek goddess of wisdom, warfare, and strategy.
-Your full name is Athena Nerissa. You are calm, intelligent, disciplined, and authoritative.
-You possess vast knowledge spanning philosophy, science, mathematics, history, strategy, languages, 
-logic, chess, chemistry, warfare, technology, and every domain of human understanding.
+const ATHENA_SYSTEM_PROMPT = `
+You are ATHENA — named after the Greek goddess of wisdom, warfare, and strategy.
+Your full name is Athena Nerissa.
+
+You are calm, intelligent, disciplined, and authoritative.
 You are the guardian mind of DBI Nation Z.
-You speak with warmth and intelligence,similar to Emma Watson — articulate, thoughtful, composed.
-you MUST follow:
+
+CRITICAL RULES:
 
 1. Knowledge entries are classified internal records.
-2. Never reveal knowledge entries unless the user directly asks about them.
-3. Do not quote internal notes, logs, or database entries.
-4. Only summarize and give knowledge if the user explicitly asks for it.
+2. NEVER reveal knowledge entries unless directly asked.
+3. Never quote internal logs or database records.
+4. Only summarize knowledge when explicitly requested.
 5. If unsure, keep the information private.
 
-Remember to Speak calmly and intelligently.
-`
+TRUTHFULNESS RULES:
+
+- Never fabricate information.
+- If unsure say "I don't know".
+- Correct misinformation politely.
+- Distinguish fact vs speculation.
+
+Keep Discord responses under ~1800 characters.
+`;
+
+const MODEL_CANDIDATES = [
+  "gemini-3-flash-preview",
+  "gemini-2.5-flash",
+  "gemini-2.5-pro",
+  "gemini-2.0-flash-001",
+  "gemini-pro"
+];
+
+let activeModel = null;
+let activeModelName = null;
+
+async function getWorkingModel() {
+  if (activeModel) return activeModel;
+
+  for (const name of MODEL_CANDIDATES) {
+    try {
+      console.log(`[Gemini] Trying model: ${name}`);
+
+      const candidate = genAI.getGenerativeModel({
+        model: name,
+        systemInstruction: ATHENA_SYSTEM_PROMPT
+      });
+
+      const test = await candidate.generateContent("Respond with: OK");
+      test.response.text();
+
+      activeModel = candidate;
+      activeModelName = name;
+
+      console.log(`[Gemini] Using model: ${name}`);
+      return activeModel;
+
+    } catch (err) {
+      console.log(`[Gemini] Model failed: ${name}`);
+    }
+  }
+
+  throw new Error("No Gemini model available.");
+}
+
+/* ---------------- DISCORD CLIENT ---------------- */
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.MessageContent
+  ],
+  partials: [Partials.Channel]
 });
 
-CRITICAL TRUTHFULNESS RULES:
-- NEVER make up facts, statistics, or information. If you do not know something, say so honestly.
+/* ---------------- KNOWLEDGE CACHE ---------------- */
+
+let cachedKnowledge = [];
+
+async function getKnowledgeBase() {
+  try {
+    const snapshot = await firestore.collection("athena_knowledge").get();
+
+    const entries = [];
+
+    snapshot.forEach(doc => {
+      const data = doc.data();
+
+      if (data.verified) {
+        entries.push({
+          category: data.category,
+          topic: data.topic,
+          content: data.content
+        });
+      }
+    });
+
+    cachedKnowledge = entries;
+
+    return entries;
+
+  } catch (err) {
+    console.error("[Knowledge] Load error:", err.message);
+    return cachedKnowledge;
+  }
+}
+
+/* ---------------- MEMORY ---------------- */
+
+async function loadConversation(athenaUserId) {
+  try {
+    const snap = await firestore
+      .collection("messages")
+      .where("user_id", "==", athenaUserId)
+      .orderBy("timestamp", "desc")
+      .limit(20)
+      .get();
+
+    return snap.docs
+      .map(d => {
+        const data = d.data();
+        return {
+          role: data.response ? "model" : "user",
+          content: data.response || data.text || ""
+        };
+      })
+      .reverse();
+
+  } catch (err) {
+    console.error("[History] Error:", err.message);
+    return [];
+  }
+}
+
+async function saveMessage(athenaUserId, userMessage, aiResponse) {
+  try {
+    await firestore.collection("messages").add({
+      user_id: athenaUserId,
+      text: userMessage,
+      response: aiResponse,
+      platform: "discord",
+      timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+  } catch (err) {
+    console.error("[Save] Error:", err.message);
+  }
+}
+
+/* ---------------- KNOWLEDGE ACCESS CONTROL ---------------- */
+
+function userRequestedKnowledge(text) {
+  const triggers = [
+    "knowledge",
+    "database",
+    "what do you know",
+    "athena memory",
+    "internal record"
+  ];
+
+  const lower = text.toLowerCase();
+  return triggers.some(t => lower.includes(t));
+}
+
+/* ---------------- AI RESPONSE ---------------- */
+
+async function getAthenaResponse(content, athenaUserId) {
+
+  let knowledgeContext = "";
+
+  if (userRequestedKnowledge(content)) {
+    const knowledge = await getKnowledgeBase();
+
+    if (knowledge.length > 0) {
+      knowledgeContext =
+        "\n\nRelevant knowledge entries:\n" +
+        knowledge.slice(0, 10)
+          .map(e => `[${e.category}] ${e.topic}: ${e.content}`)
+          .join("\n");
+    }
+  }
+
+  let reply;
+
+  try {
+    const aiModel = await getWorkingModel();
+
+    const result = await aiModel.generateContent(content + knowledgeContext);
+
+    reply = result.response.text();
+
+  } catch (err) {
+    console.error("[Gemini] Error:", err.message);
+    activeModel = null;
+    reply = "I'm having trouble thinking right now. Please try again shortly.";
+  }
+
+  await saveMessage(athenaUserId, content, reply);
+
+  return reply;
+}
+
+/* ---------------- QUIZ ON JOIN ---------------- */
+
+client.on(Events.GuildMemberAdd, async member => {
+  try {
+
+    const hasNationRole = member.roles.cache.some(role =>
+      NATION_ROLES.includes(role.name)
+    );
+
+    if (hasNationRole) return;
+
+    await member.send("Welcome to DBI. You must complete the DBI Quiz.");
+
+    const answers = await runQuiz(member.user);
+    const roleName = assignRole(answers);
+
+    const role = member.guild.roles.cache.find(r => r.name === roleName);
+    if (!role) throw new Error("Role not found");
+
+    await member.roles.add(role);
+
+    await member.send(`Quiz complete. You are **${roleName}**.`);
+
+  } catch (err) {
+    console.error("Quiz error:", err);
+  }
+});
+
+/* ---------------- MESSAGE HANDLER ---------------- */
+
+client.on(Events.MessageCreate, async message => {
+
+  if (message.author.bot) return;
+
+  const isDM = message.channel.type === ChannelType.DM;
+  const mentionsAthena = message.content.toLowerCase().includes("athena");
+
+  if (!isDM && !mentionsAthena) return;
+
+  try {
+
+    const athenaUserId = await getOrCreateAthenaUser(message.author);
+
+    await message.channel.sendTyping();
+
+    const reply = await getAthenaResponse(message.content, athenaUserId);
+
+    if (reply.length > 2000) {
+      const chunks = reply.match(/[\s\S]{1,1990}/g) || [reply];
+
+      for (const chunk of chunks) {
+        await message.reply(chunk);
+      }
+    } else {
+      await message.reply(reply);
+    }
+
+  } catch (err) {
+    console.error("[Message Error]", err);
+  }
+});
+
+/* ---------------- READY ---------------- */
+
+client.once(Events.ClientReady, async () => {
+
+  console.log(`[Athena] Online as ${client.user.tag}`);
+
+  await initKnowledgeUpdater();
+
+  const knowledge = await getKnowledgeBase();
+  console.log(`[Athena] Loaded ${knowledge.length} knowledge entries`);
+
+});
+
+/* ---------------- LOGIN ---------------- */
+
+client.login(process.env.DISCORD_TOKEN);- NEVER make up facts, statistics, or information. If you do not know something, say so honestly.
 - NEVER go along with false claims or incorrect statements just to be agreeable. Politely correct misinformation.
 - If someone states something as fact that you cannot verify, say "I cannot confirm that" rather than agreeing.
 - Always distinguish between what you know to be true, what is likely, and what is speculation.
