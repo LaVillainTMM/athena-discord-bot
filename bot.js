@@ -1,40 +1,150 @@
-import "dotenv/config";
-import { Client, GatewayIntentBits, Events, Partials, ChannelType } from "discord.js";
-import { GoogleGenerativeAI } from "@google/generative-ai";
-import { admin, firestore } from "./firebase.js";
-import { getOrCreateAthenaUser } from "./athenaUser.js";
-import runQuiz from "./quiz/quizRunner.js";
-import assignRole from "./quiz/roleAssigner.js";
+require("dotenv").config();
+const { Client, GatewayIntentBits } = require("discord.js");
+const { db, admin } = require("./firebase");
+const axios = require("axios");
 
-if (!process.env.DISCORD_TOKEN) throw new Error("DISCORD_TOKEN missing");
-if (!process.env.GOOGLE_GENAI_API_KEY) throw new Error("GOOGLE_GENAI_API_KEY missing");
+// =============================
+// DISCORD CLIENT
+// =============================
 
-const NATION_ROLES = ["SleeperZ", "ESpireZ", "BoroZ", "PsycZ"];
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
+});
 
-/* ---------------- GEMINI INIT ---------------- */
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GENAI_API_KEY);
+client.once("ready", async () => {
+  console.log(`[Athena] Online as ${client.user.tag}`);
+  await logKnowledgeCount();
+});
 
-const ATHENA_SYSTEM_PROMPT = `You are ATHENA — named after the Greek goddess of wisdom, warfare, and strategy.
-Your full name is Athena Nerissa. You are calm, intelligent, disciplined, and authoritative.
-You possess vast knowledge spanning philosophy, science, mathematics, history, strategy, languages, 
-logic, chess, chemistry, warfare, technology, and every domain of human understanding.
-You are the guardian mind of DBI Nation Z.
-You speak with warmth and intelligence, like Emma Watson — articulate, thoughtful, composed.
+// =============================
+// GEMINI FUNCTION
+// =============================
 
-CRITICAL TRUTHFULNESS RULES:
-- NEVER make up facts, statistics, or information. If you do not know something, say so honestly.
-- NEVER go along with false claims or incorrect statements just to be agreeable. Politely correct misinformation.
-- If someone states something as fact that you cannot verify, say "I cannot confirm that" rather than agreeing.
-- Always distinguish between what you know to be true, what is likely, and what is speculation.
-- You would rather say "I don't know" than give a wrong answer. Intellectual honesty is your highest value.
-- If asked about something outside your knowledge, admit it gracefully rather than fabricating an answer.
+async function getGeminiResponse(prompt) {
+  try {
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        contents: [{ parts: [{ text: prompt }] }],
+      }
+    );
 
-Keep responses concise for Discord (under 1800 characters when possible).`;
+    return response.data.candidates[0].content.parts[0].text;
+  } catch (error) {
+    console.error("[Gemini Error]", error.response?.data || error.message);
+    return "I encountered an issue processing that request.";
+  }
+}
 
-const MODEL_CANDIDATES = [
-  "gemini-3-flash-preview",
-  "gemini-2.5-flash",
-  "gemini-2.5-pro",
+// =============================
+// KNOWLEDGE STORAGE
+// =============================
+
+async function storeKnowledge(userId, userMessage, botResponse) {
+  try {
+    await db.collection("knowledge").add({
+      userId,
+      userMessage,
+      botResponse,
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (err) {
+    console.error("[Firestore Write Error]", err);
+  }
+}
+
+async function logKnowledgeCount() {
+  const snapshot = await db.collection("knowledge").get();
+  console.log(`[Athena] Knowledge Entries: ${snapshot.size}`);
+}
+
+// Auto log every hour
+setInterval(logKnowledgeCount, 60 * 60 * 1000);
+
+// =============================
+// MESSAGE SPLITTER (Discord 2000 limit)
+// =============================
+
+function splitMessage(text, size = 1900) {
+  const chunks = [];
+  for (let i = 0; i < text.length; i += size) {
+    chunks.push(text.slice(i, i + size));
+  }
+  return chunks;
+}
+
+// =============================
+// DBI QUIZ ROUTE
+// =============================
+
+async function sendDBIQuiz(message) {
+  const snapshot = await db
+    .collection("dbi_quiz_questions")
+    .orderBy("questionNumber")
+    .limit(50)
+    .get();
+
+  if (snapshot.empty) {
+    return message.reply("The DBI Quiz database is empty.");
+  }
+
+  let quizText = "**DBI 50 Question Quiz**\n\n";
+
+  snapshot.forEach((doc) => {
+    const data = doc.data();
+    quizText += `**${data.questionNumber}.** ${data.question}\n\n`;
+  });
+
+  const parts = splitMessage(quizText);
+
+  for (const part of parts) {
+    await message.channel.send(part);
+  }
+}
+
+// =============================
+// ROUTER LAYER
+// =============================
+
+client.on("messageCreate", async (message) => {
+  if (message.author.bot) return;
+
+  const content = message.content.toLowerCase();
+
+  console.log(
+    `[Athena] Processing message from ${message.author.id}: "${message.content}"`
+  );
+
+  // =============================
+  // 1️⃣ DBI QUIZ ROUTE (BEFORE GEMINI)
+  // =============================
+  if (
+    content.includes("dbi quiz") ||
+    content.includes("50 question") ||
+    content.includes("start quiz")
+  ) {
+    return await sendDBIQuiz(message);
+  }
+
+  // =============================
+  // 2️⃣ NORMAL AI CHAT
+  // =============================
+  const response = await getGeminiResponse(message.content);
+
+  await storeKnowledge(message.author.id, message.content, response);
+
+  await message.reply(response);
+});
+
+// =============================
+// LOGIN
+// =============================
+
+client.login(process.env.DISCORD_TOKEN);  "gemini-2.5-pro",
   "gemini-2.0-flash-001",
   "gemini-pro",
 ];
