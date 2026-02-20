@@ -183,7 +183,7 @@ export default [
     id: 19,
     question: "What did you think of the test?",
     options: [
-      "Too Long,
+      "Too Long"
       "Too Short",
       "More Depth",
       "It's Fine"
