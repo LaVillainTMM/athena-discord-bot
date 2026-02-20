@@ -1,40 +1,22 @@
-import admin from "firebase-admin";
+// firebase.js
 
-function buildFromEnvVars() {
-  const projectId = process.env.FIREBASE_PROJECT_ID;
-  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  const privateKey = process.env.FIREBASE_PRIVATE_KEY;
+const admin = require("firebase-admin");
 
-  if (projectId && clientEmail && privateKey) {
-    return {
-      type: "service_account",
-      project_id: projectId,
-      private_key: privateKey.replace(/\\n/g, "\n"),
-      client_email: clientEmail,
-    };
-  }
-  return null;
+if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
+  throw new Error("FIREBASE_SERVICE_ACCOUNT is not set in Railway variables.");
 }
 
-function parseServiceAccount(raw) {
-  if (!raw) return null;
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 
-  const attempts = [
-    () => JSON.parse(raw),
-    () => JSON.parse(raw.replace(/\\n/g, "\n")),
-    () => JSON.parse(Buffer.from(raw, "base64").toString("utf-8")),
-    () => {
-      const fixed = raw.replace(/(['"])?(\w+)(['"])?\s*:/g, '"$2":');
-      return JSON.parse(fixed);
-    },
-    () => new Function("return (" + raw + ")")(),
-  ];
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 
-  for (const attempt of attempts) {
-    try {
-      const result = attempt();
-      if (result && result.project_id) return result;
-    } catch {}
+const db = admin.firestore();
+
+console.log("[Firebase] Initialized for project:", serviceAccount.project_id);
+
+module.exports = { admin, db };    } catch {}
   }
   return null;
 }
