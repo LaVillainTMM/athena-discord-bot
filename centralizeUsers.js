@@ -1,6 +1,8 @@
 // centralizeUsers.js
 import "dotenv/config";
 import { firestore, admin } from "./firebase.js";
+import { v4 as uuidv4 } from "uuid";
+import { Timestamp } from "firebase-admin/firestore";
 
 async function centralizeUsers() {
   console.log("[Centralize] Starting Athena AI user centralization...");
@@ -8,23 +10,23 @@ async function centralizeUsers() {
   const athenaCollection = firestore.collection("athena_ai");
   const discordUsersCol = firestore.collection("discord_users");
 
-  // iterate over Discord users
   const snapshot = await discordUsersCol.get();
 
   for (const doc of snapshot.docs) {
     const discordData = doc.data();
 
-    // try to find existing user in athena_ai by discord ID
-    const existing = await athenaCollection
+    // search existing user by Discord ID
+    const existingSnap = await athenaCollection
       .where("platforms.discord.id", "==", discordData.id)
       .limit(1)
       .get();
 
     let userDocRef;
-    if (existing.empty) {
-      // create new user
+    if (existingSnap.empty) {
+      const newUserUid = uuidv4();
       userDocRef = athenaCollection.doc();
       await userDocRef.set({
+        user_uid: newUserUid,
         display_name: discordData.username,
         platforms: {
           discord: {
@@ -32,13 +34,15 @@ async function centralizeUsers() {
             username: discordData.username,
             guilds: discordData.guilds || [],
             roles: discordData.roles || [],
-            last_active: discordData.last_active || new Date(),
+            last_active: discordData.last_active
+              ? Timestamp.fromDate(new Date(discordData.last_active))
+              : Timestamp.now(),
           },
         },
         timezone: discordData.timezone || "UTC",
         utc_offset_minutes: discordData.utc_offset_minutes || 0,
-        created_at: new Date(),
-        updated_at: new Date(),
+        created_at: Timestamp.now(),
+        updated_at: Timestamp.now(),
         message_stats: {
           total_messages: 0,
           last_message: null,
@@ -46,17 +50,26 @@ async function centralizeUsers() {
       });
       console.log(`[Centralize] Created new user: ${discordData.username}`);
     } else {
-      userDocRef = existing.docs[0].ref;
-      await userDocRef.update({
-        "platforms.discord": {
-          id: discordData.id,
-          username: discordData.username,
-          guilds: discordData.guilds || [],
-          roles: discordData.roles || [],
-          last_active: discordData.last_active || new Date(),
+      userDocRef = existingSnap.docs[0].ref;
+      const existingData = existingSnap.docs[0].data();
+      await userDocRef.set(
+        {
+          platforms: {
+            ...existingData.platforms, // preserve other platforms
+            discord: {
+              id: discordData.id,
+              username: discordData.username,
+              guilds: discordData.guilds || [],
+              roles: discordData.roles || [],
+              last_active: discordData.last_active
+                ? Timestamp.fromDate(new Date(discordData.last_active))
+                : Timestamp.now(),
+            },
+          },
+          updated_at: Timestamp.now(),
         },
-        updated_at: new Date(),
-      });
+        { merge: true }
+      );
       console.log(`[Centralize] Updated user: ${discordData.username}`);
     }
   }
