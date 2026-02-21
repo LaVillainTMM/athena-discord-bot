@@ -3,13 +3,14 @@ import "dotenv/config";
 import { Client, GatewayIntentBits, Events, ChannelType, Partials } from "discord.js";
 import { admin, firestore } from "./firebase.js";
 import { centralizeAllUsers } from "./centralizeUsers.js";
-import { getOrCreateAthenaUser as getOrCreateCentralUser } from "./athenaUser.js";
+import { getOrCreateAthenaUser } from "./athenaUser.js";
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
 import { initKnowledgeUpdater } from "./lib/knowledgeUpdater.js";
 
 /* ---------------- CONSTANTS ---------------- */
 const NATION_ROLES = ["SleeperZ", "ESpireZ", "BoroZ", "PsycZ"];
+const ALLOWED_CHANNELS = ["chat", "questions"]; // channels/categories to track
 
 /* ---------------- DISCORD CLIENT ---------------- */
 const client = new Client({
@@ -46,29 +47,32 @@ async function getKnowledgeBase() {
 }
 
 // ---------------- SAVE MESSAGE ----------------
-async function saveMessage(athenaUserId, userMessage, aiResponse, discordTimestamp = null) {
+async function saveMessage(athenaUserId, message, aiResponse = null, source = "discord") {
   try {
+    // Store in messages only
     await firestore.collection("messages").add({
       user_id: athenaUserId,
-      text: typeof userMessage === "string" ? userMessage : userMessage.content,
+      text: message.content,
       response: aiResponse,
       platform: "discord",
+      channel_id: message.channel.id,
+      guild_id: message.guild?.id || null,
       timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      discordTimestamp: discordTimestamp || (userMessage?.createdAt || new Date()),
-      timezone: "UTC"
+      discordTimestamp: message.createdAt || new Date(),
+      source
     });
   } catch (err) {
-    console.error("[Save]", err.message);
+    console.error("[Save] Failed to store message:", err);
   }
 }
 
-/* ---------------- QUIZ ON JOIN ---------------- */
+// ---------------- QUIZ ON JOIN ----------------
 client.on(Events.GuildMemberAdd, async member => {
   try {
     if (member.roles.cache.some(r => NATION_ROLES.includes(r.name))) return;
 
     await member.send("Welcome to DBI. Please complete the entrance quiz.");
-    await getOrCreateCentralUser("discord", member.user.id, member.user.username);
+    await getOrCreateAthenaUser("discord", member.user.id, member.user.username);
 
     const answers = await runQuiz(member.user);
     const roleName = assignRole(answers);
@@ -80,43 +84,54 @@ client.on(Events.GuildMemberAdd, async member => {
   }
 });
 
-/* ---------------- MESSAGE HANDLER ---------------- */
+// ---------------- MESSAGE HANDLER ----------------
 client.on(Events.MessageCreate, async message => {
   if (message.author.bot) return;
 
   const isDM = message.channel.type === ChannelType.DM || message.channel.type === ChannelType.GroupDM;
-  const mentioned = message.content.toLowerCase().includes("athena");
+  const mentioned = message.mentions.has(client.user);
 
-  if (!isDM && !mentioned) return;
+  // Only respond to DMs, mentions, or allowed channels
+  if (!isDM && !mentioned && !ALLOWED_CHANNELS.includes(message.channel.name.toLowerCase())) return;
 
   try {
-    const athenaUserId = await getOrCreateCentralUser("discord", message.author.id, message.author.username);
+    const athenaUserId = await getOrCreateAthenaUser("discord", message.author.id, message.author.username);
+
+    // Store all messages Athena sees in messages only
+    await saveMessage(athenaUserId, message, null, isDM ? "dm" : mentioned ? "mention" : "channel");
+
+    // Typing indicator
     await message.channel.sendTyping();
 
-    // Get AI response (Gemini or your generative AI)
-    const reply = `AI response placeholder for: ${message.content}`;
+    // TODO: Replace with your generative AI call (Gemini, etc.)
+    const aiReply = `AI response placeholder for: ${message.content}`;
 
-    if (reply.length > 2000) {
-      const parts = reply.match(/[\s\S]{1,1990}/g) || [reply];
+    // Send reply in chunks if too long
+    if (aiReply.length > 2000) {
+      const parts = aiReply.match(/[\s\S]{1,1990}/g) || [aiReply];
       for (const p of parts) await message.reply(p);
     } else {
-      await message.reply(reply);
+      await message.reply(aiReply);
     }
 
-    await saveMessage(athenaUserId, message, reply);
+    // Save the AI response along with user message
+    await saveMessage(athenaUserId, message, aiReply, isDM ? "dm" : mentioned ? "mention" : "channel");
 
+    // NOTE: Do NOT add messages automatically to knowledge_updates
+    // Only add entries there when Athena identifies new knowledge
   } catch (err) {
     console.error("[Message Error]", err);
   }
 });
 
-/* ---------------- READY ---------------- */
+// ---------------- READY ----------------
 client.once(Events.ClientReady, async () => {
   console.log(`[Athena] Online as ${client.user.tag}`);
 
+  // Centralize all users
   await centralizeAllUsers();
 
-  // Init background knowledge updater
+  // Initialize background knowledge updater
   await initKnowledgeUpdater(firestore, {
     collection: "athena_knowledge",
     intervalMs: 5 * 60 * 1000
@@ -126,5 +141,5 @@ client.once(Events.ClientReady, async () => {
   console.log(`[Athena] Loaded ${knowledge.length} knowledge entries`);
 });
 
-/* ---------------- LOGIN ---------------- */
+// ---------------- LOGIN ----------------
 client.login(process.env.DISCORD_TOKEN);
