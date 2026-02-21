@@ -1,6 +1,7 @@
 {
   "name": "athena-discord-bot",
   "version": "1.0.0",
+  "type": "module",
   "description": "Athena Discord Bot for DBI Nation Z",
   "main": "bot.js",
   "type": "module",
