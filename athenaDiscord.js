@@ -1,7 +1,11 @@
 // athenaDiscord.js
 import { Client, GatewayIntentBits } from "discord.js";
 import { firestore, admin } from "./firebase.js";
+import { Client, GatewayIntentBits, ChannelType } from "discord.js";
 
+if (message.channel.type === ChannelType.DM) {
+  await storeMessage(message);
+}
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
