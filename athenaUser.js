@@ -71,3 +71,24 @@ export async function linkDiscordId(athenaUserId, discordId) {
     tx.update(coreRef, { linkedDiscordIds: linkedIds });
   });
 }
+
+export async function linkPlatformId(athenaUserId, platform, platformId) {
+  const coreRef = firestore
+    .collection("athena_ai")
+    .doc("users")
+    .collection("humans")
+    .doc(athenaUserId)
+    .collection("profile")
+    .doc("core");
+
+  await firestore.runTransaction(async tx => {
+    const doc = await tx.get(coreRef);
+    if (!doc.exists) throw new Error("Athena user not found");
+
+    const platforms = doc.data().platforms || {};
+    if (!platforms[platform]) platforms[platform] = {};
+    platforms[platform].id = platformId;
+
+    tx.update(coreRef, { platforms });
+  });
+}
