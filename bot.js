@@ -5,28 +5,10 @@ import { Client, GatewayIntentBits, Events, Partials, ChannelType } from "discor
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 import { admin, firestore } from "./firebase.js";
-import { getOrCreateAthenaUser as getOrCreateCentralUser } from "./centralizeUsers.js"; // centralized users
+import { getOrCreateAthenaUser as getOrCreateCentralUser, centralizeAllUsers } from "./centralizeUsers.js"; 
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
 import { initKnowledgeUpdater } from "./lib/knowledgeUpdater.js";
-
-
-
-import { centralizeAllUsers } from "./centralizeUsers.js";
-
-// On bot ready
-client.once(Events.ClientReady, async () => {
-  console.log(`[Athena] Online as ${client.user.tag}`);
-
-  await centralizeAllUsers(); // ensures all accounts are unified
-  await initKnowledgeUpdater(firestore, { collection: "athena_knowledge", intervalMs: 5*60*1000 });
-
-  const knowledge = await getKnowledgeBase();
-  console.log(`[Athena] Loaded ${knowledge.length} knowledge entries`);
-});
-
-
-
 
 /* ---------------- ENV VALIDATION ---------------- */
 if (!process.env.DISCORD_TOKEN) throw new Error("DISCORD_TOKEN missing");
@@ -210,6 +192,7 @@ client.on(Events.GuildMemberAdd, async member => {
 
     await member.send("Welcome to DBI. Please complete the entrance quiz.");
 
+    // Ensure multi-platform Athena ID
     const athenaUserId = await getOrCreateCentralUser("discord", member.user.id, member.user.username);
 
     const answers = await runQuiz(member.user);
@@ -228,11 +211,12 @@ client.on(Events.GuildMemberAdd, async member => {
 client.on(Events.MessageCreate, async message => {
   if (message.author.bot) return;
 
-  const isDM = message.channel.type === ChannelType.DM;
+  const isDM = message.channel.type === ChannelType.DM || message.channel.type === ChannelType.GroupDM;
   const mentioned = message.content.toLowerCase().includes("athena");
   if (!isDM && !mentioned) return;
 
   try {
+    // Get canonical Athena ID
     const athenaUserId = await getOrCreateCentralUser("discord", message.author.id, message.author.username);
 
     await message.channel.sendTyping();
@@ -249,17 +233,26 @@ client.on(Events.MessageCreate, async message => {
   }
 });
 
-/* ---------------- READY ---------------- */
+/* ---------------- CLIENT READY ---------------- */
 client.once(Events.ClientReady, async () => {
   console.log(`[Athena] Online as ${client.user.tag}`);
 
-  await initKnowledgeUpdater(firestore, {
-    collection: "athena_knowledge",
-    intervalMs: 5 * 60 * 1000
-  });
+  try {
+    // 1. Centralize all users across platforms
+    await centralizeAllUsers();
 
-  const knowledge = await getKnowledgeBase();
-  console.log(`[Athena] Loaded ${knowledge.length} knowledge entries`);
+    // 2. Initialize knowledge updater
+    await initKnowledgeUpdater(firestore, {
+      collection: "athena_knowledge",
+      intervalMs: 5 * 60 * 1000
+    });
+
+    // 3. Load knowledge cache
+    const knowledge = await getKnowledgeBase();
+    console.log(`[Athena] Loaded ${knowledge.length} knowledge entries`);
+  } catch (err) {
+    console.error("[Athena Ready] Error during setup:", err);
+  }
 });
 
 /* ---------------- LOGIN ---------------- */
