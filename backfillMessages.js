@@ -21,15 +21,10 @@ async function backfillMessages() {
     for (const msg of snap.docs) {
       const data = msg.data();
 
-      // Ensure platform is always a valid non-empty string
-      let platform = data.platform;
-      if (!platform || typeof platform !== "string" || platform.trim() === "") {
-        platform = "discord";
-      }
-
+      const platform = data.platform || "discord";
       const platformId = data.user_id;
-      if (!platformId) continue;
 
+      // Fetch the corresponding Athena account
       const accountDoc = await firestore
         .collection("athena_ai")
         .doc("accounts")
@@ -39,8 +34,18 @@ async function backfillMessages() {
 
       if (!accountDoc.exists) continue;
 
-      await msg.ref.update({
-        user_id: accountDoc.data().athenaUserId
+      const athenaUserId = accountDoc.data().athenaUserId;
+
+      // 1️⃣ Update the original messages collection
+      await msg.ref.update({ user_id: athenaUserId });
+
+      // 2️⃣ Add or backfill into knowledge_updates
+      await firestore.collection("knowledge_updates").doc(msg.id).set({
+        user_id: athenaUserId,
+        platform,
+        original_message: data.text || data.content || "",
+        createdAt: data.createdAt || admin.firestore.FieldValue.serverTimestamp(),
+        backfilled: true,
       });
     }
 
