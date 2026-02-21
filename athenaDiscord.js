@@ -1,11 +1,6 @@
-// athenaDiscord.js
-import { Client, GatewayIntentBits } from "discord.js";
-import { firestore, admin } from "./firebase.js";
 import { Client, GatewayIntentBits, ChannelType } from "discord.js";
+import { firestore, admin } from "./firebase.js";
 
-if (message.channel.type === ChannelType.DM) {
-  await storeMessage(message);
-}
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -34,21 +29,26 @@ async function storeMessage(message) {
     });
     console.log("[Firebase] Message stored:", msgRef.id);
 
-    // 2️⃣ Get Athena account
-    const accountDoc = await firestore
+    // 2️⃣ Get Athena account (create if missing)
+    const accountDocRef = firestore
       .collection("athena_ai")
       .doc("accounts")
       .collection(platform)
-      .doc(platformId)
-      .get();
+      .doc(platformId);
+
+    const accountDoc = await accountDocRef.get();
+
+    if (!accountDoc.exists) {
+      await accountDocRef.set({ athenaUserId: platformId });
+    }
 
     const athenaUserId = accountDoc.exists
       ? accountDoc.data().athenaUserId
-      : null;
+      : platformId;
 
     // 3️⃣ Store in `knowledge_updates`
     await firestore.collection("knowledge_updates").doc(msgRef.id).set({
-      user_id: athenaUserId || platformId,
+      user_id: athenaUserId,
       platform,
       original_message: text,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -61,8 +61,15 @@ async function storeMessage(message) {
 
 // -------------------- Event: New Discord DM --------------------
 client.on("messageCreate", async (message) => {
-  if (message.channel.type === 1) { // 1 = DM channel
-    await storeMessage(message);
+  try {
+    if (message.author.bot) return;
+
+    if (message.channel.type === ChannelType.DM) {
+      console.log("[Discord] DM received from", message.author.id);
+      await storeMessage(message);
+    }
+  } catch (err) {
+    console.error("[Discord] Error handling message:", err);
   }
 });
 
@@ -89,7 +96,6 @@ async function backfillExistingMessages() {
       const platform = data.platform || "discord";
       const platformId = data.user_id;
 
-      // Get Athena account
       const accountDoc = await firestore
         .collection("athena_ai")
         .doc("accounts")
@@ -99,17 +105,15 @@ async function backfillExistingMessages() {
 
       const athenaUserId = accountDoc.exists
         ? accountDoc.data().athenaUserId
-        : null;
+        : platformId;
 
-      // Update messages collection
-      await msg.ref.update({ user_id: athenaUserId || platformId });
+      await msg.ref.update({ user_id: athenaUserId });
 
-      // Add to knowledge_updates if not exists
       const knowledgeRef = firestore.collection("knowledge_updates").doc(msg.id);
       const knowledgeDoc = await knowledgeRef.get();
       if (!knowledgeDoc.exists) {
         await knowledgeRef.set({
-          user_id: athenaUserId || platformId,
+          user_id: athenaUserId,
           platform,
           original_message: data.text || data.content || "",
           createdAt: data.createdAt || admin.firestore.FieldValue.serverTimestamp(),
@@ -127,7 +131,6 @@ async function backfillExistingMessages() {
 // -------------------- Start Bot --------------------
 client.once("ready", async () => {
   console.log(`[Discord] Logged in as ${client.user.tag}`);
-  // Optional: run backfill once on startup
   await backfillExistingMessages();
 });
 
