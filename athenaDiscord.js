@@ -13,6 +13,26 @@ const client = new Client({
   partials: ["CHANNEL"] // Required to receive DMs
 });
 
+async function storeDiscordMessage(message) {
+  try {
+    await firestore.collection("messages").add({
+      message_id: message.id,
+      content: message.content,
+      channel_id: message.channelId,
+      guild_id: message.guild?.id || null,
+      user_id: message.author.id,
+      username: message.author.username,
+      is_bot: message.author.bot,
+      platform: "discord",
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    console.log("[Messages] Stored:", message.author.username);
+  } catch (err) {
+    console.error("[Messages] Firestore write failed:", err);
+  }
+}
+
 // -------------------- Helper: Store Message --------------------
 async function storeMessage(message) {
   if (message.author.bot) return;
