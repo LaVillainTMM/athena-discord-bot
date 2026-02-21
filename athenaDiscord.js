@@ -1,5 +1,7 @@
+// athenaDiscord.js
 import { Client, GatewayIntentBits, ChannelType } from "discord.js";
 import { firestore, admin } from "./firebase.js";
+import { getOrCreateAthenaUser } from "./athenaUser.js";
 
 const client = new Client({
   intents: [
@@ -20,31 +22,17 @@ async function storeMessage(message) {
   const text = message.content;
 
   try {
-    // 1️⃣ Store message in `messages` collection
+    // 1️⃣ Ensure Athena user exists
+    const athenaUserId = await getOrCreateAthenaUser(platform, platformId, message.author.username);
+
+    // 2️⃣ Store message in `messages` collection
     const msgRef = await firestore.collection("messages").add({
-      user_id: platformId,
+      user_id: athenaUserId,
       platform,
       text,
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
     console.log("[Firebase] Message stored:", msgRef.id);
-
-    // 2️⃣ Get Athena account (create if missing)
-    const accountDocRef = firestore
-      .collection("athena_ai")
-      .doc("accounts")
-      .collection(platform)
-      .doc(platformId);
-
-    const accountDoc = await accountDocRef.get();
-
-    if (!accountDoc.exists) {
-  await accountDocRef.set({ athenaUserId: platformId });
-  const newDoc = await accountDocRef.get();
-  athenaUserId = newDoc.data().athenaUserId;
-} else {
-  athenaUserId = accountDoc.data().athenaUserId;
-}
 
     // 3️⃣ Store in `knowledge_updates`
     await firestore.collection("knowledge_updates").doc(msgRef.id).set({
@@ -54,6 +42,19 @@ async function storeMessage(message) {
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       source: "discord"
     });
+
+    // 4️⃣ Sync immediately into athena_knowledge
+    const knowledgeRef = firestore.collection("athena_knowledge").doc(msgRef.id);
+    await knowledgeRef.set({
+      user_id: athenaUserId,
+      platform,
+      topic: "user_message",
+      content: text,
+      verified: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      source: "discord"
+    });
+
   } catch (err) {
     console.error("[Firebase] Failed to store message:", err);
   }
@@ -92,31 +93,40 @@ async function backfillExistingMessages() {
 
     for (const msg of snap.docs) {
       const data = msg.data();
-
       const platform = data.platform || "discord";
       const platformId = data.user_id;
 
-      const accountDoc = await firestore
-        .collection("athena_ai")
-        .doc("accounts")
-        .collection(platform)
-        .doc(platformId)
-        .get();
+      // Ensure Athena user exists
+      const athenaUserId = await getOrCreateAthenaUser(platform, platformId);
 
-      const athenaUserId = accountDoc.exists
-        ? accountDoc.data().athenaUserId
-        : platformId;
-
+      // Update messages collection with Athena ID
       await msg.ref.update({ user_id: athenaUserId });
 
-      const knowledgeRef = firestore.collection("knowledge_updates").doc(msg.id);
+      // Backfill into knowledge_updates
+      const knowledgeUpdateRef = firestore.collection("knowledge_updates").doc(msg.id);
+      const knowledgeUpdateDoc = await knowledgeUpdateRef.get();
+      if (!knowledgeUpdateDoc.exists) {
+        await knowledgeUpdateRef.set({
+          user_id: athenaUserId,
+          platform,
+          original_message: data.text || data.content || "",
+          createdAt: data.createdAt || admin.firestore.FieldValue.serverTimestamp(),
+          backfilled: true
+        });
+      }
+
+      // Backfill into athena_knowledge
+      const knowledgeRef = firestore.collection("athena_knowledge").doc(msg.id);
       const knowledgeDoc = await knowledgeRef.get();
       if (!knowledgeDoc.exists) {
         await knowledgeRef.set({
           user_id: athenaUserId,
           platform,
-          original_message: data.text || data.content || "",
+          topic: "user_message",
+          content: data.text || data.content || "",
+          verified: false,
           createdAt: data.createdAt || admin.firestore.FieldValue.serverTimestamp(),
+          source: "discord",
           backfilled: true
         });
       }
