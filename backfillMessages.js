@@ -21,8 +21,14 @@ async function backfillMessages() {
     for (const msg of snap.docs) {
       const data = msg.data();
 
-      const platform = data.platform || "discord";
+      // Ensure platform is always a valid non-empty string
+      let platform = data.platform;
+      if (!platform || typeof platform !== "string" || platform.trim() === "") {
+        platform = "discord";
+      }
+
       const platformId = data.user_id;
+      if (!platformId) continue;
 
       const accountDoc = await firestore
         .collection("athena_ai")
