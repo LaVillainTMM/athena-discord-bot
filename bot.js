@@ -1,15 +1,16 @@
 // bot.js
 import "dotenv/config";
-import { GoogleGenerativeAI } from "@google/generative-ai";
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 import { Client, GatewayIntentBits, Events, ChannelType, Partials } from "discord.js";
 import { admin, firestore } from "./firebase.js";
 import { centralizeAllUsers } from "./centralizeUsers.js";
 import { getOrCreateAthenaUser } from "./athenaUser.js";
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
-import { initKnowledgeUpdater, startAutonomousLearning } from "./lib/knowledgeUpdater.js";
 
+import {
+  initKnowledgeUpdater,
+  startAutonomousLearning
+} from "./lib/knowledgeUpdater.js";
 /* ---------------- CONSTANTS ---------------- */
 const NATION_ROLES = ["SleeperZ", "ESpireZ", "BoroZ", "PsycZ"];
 const ALLOWED_CHANNELS = ["chat", "questions"];
@@ -149,7 +150,6 @@ client.once(Events.ClientReady, async () => {
     });
 
     // Start autonomous knowledge gathering every 3 min
-    import { startAutonomousLearning } from "./lib/knowledgeUpdater.js";
 
 startAutonomousLearning(180000);
 
