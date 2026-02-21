@@ -39,12 +39,12 @@ async function storeMessage(message) {
     const accountDoc = await accountDocRef.get();
 
     if (!accountDoc.exists) {
-      await accountDocRef.set({ athenaUserId: platformId });
-    }
-
-    const athenaUserId = accountDoc.exists
-      ? accountDoc.data().athenaUserId
-      : platformId;
+  await accountDocRef.set({ athenaUserId: platformId });
+  const newDoc = await accountDocRef.get();
+  athenaUserId = newDoc.data().athenaUserId;
+} else {
+  athenaUserId = accountDoc.data().athenaUserId;
+}
 
     // 3️⃣ Store in `knowledge_updates`
     await firestore.collection("knowledge_updates").doc(msgRef.id).set({
