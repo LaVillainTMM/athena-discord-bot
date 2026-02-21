@@ -3,12 +3,9 @@
 import "dotenv/config";
 import { Client, GatewayIntentBits, Events, Partials, ChannelType } from "discord.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-
 import { admin, firestore } from "./firebase.js";
-
-import { getOrCreateAthenaUser as getOrCreateCentralUser } from "./athenaUser.js";
 import { centralizeAllUsers } from "./centralizeUsers.js";
-
+import { getOrCreateAthenaUser as getOrCreateCentralUser } from "./athenaUser.js";
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
 import { initKnowledgeUpdater } from "./lib/knowledgeUpdater.js";
