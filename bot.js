@@ -6,11 +6,11 @@ import { centralizeAllUsers } from "./centralizeUsers.js";
 import { getOrCreateAthenaUser } from "./athenaUser.js";
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
-import { initKnowledgeUpdater, storeNewKnowledge, startAutonomousLearning } from "./lib/knowledgeUpdater.js";
+import { initKnowledgeUpdater, startAutonomousLearning } from "./lib/knowledgeUpdater.js";
 
 /* ---------------- CONSTANTS ---------------- */
 const NATION_ROLES = ["SleeperZ", "ESpireZ", "BoroZ", "PsycZ"];
-const ALLOWED_CHANNELS = ["chat", "questions"]; // channels/categories to track
+const ALLOWED_CHANNELS = ["chat", "questions"];
 
 /* ---------------- DISCORD CLIENT ---------------- */
 const client = new Client({
@@ -84,7 +84,10 @@ client.on(Events.GuildMemberAdd, async member => {
 });
 
 // ---------------- MESSAGE HANDLER ----------------
+let knowledgeAPI = null; // Will hold the updater API
+
 client.on(Events.MessageCreate, async message => {
+  if (!knowledgeAPI) return; // Ensure updater is initialized
   if (message.author.bot) return;
 
   const isDM = message.channel.type === ChannelType.DM || message.channel.type === ChannelType.GroupDM;
@@ -95,7 +98,7 @@ client.on(Events.MessageCreate, async message => {
   try {
     const athenaUserId = await getOrCreateAthenaUser("discord", message.author.id, message.author.username);
 
-    // Store all messages in messages collection
+    // Store user message
     await saveMessage(athenaUserId, message, null, isDM ? "dm" : mentioned ? "mention" : "channel");
 
     // Typing indicator
@@ -112,20 +115,18 @@ client.on(Events.MessageCreate, async message => {
       await message.reply(aiReply);
     }
 
-    // Save the AI response alongside user message
+    // Store AI response
     await saveMessage(athenaUserId, message, aiReply, isDM ? "dm" : mentioned ? "mention" : "channel");
 
-    // Automatically detect new knowledge from messages
-    // Example: simplistic fact detection (can be improved with NLP)
-    if (message.content.split(" ").length > 5) { // minimal heuristic
-      await storeNewKnowledge({
+    // Automatic knowledge detection
+    if (message.content.split(" ").length > 5) {
+      await knowledgeAPI.storeNewKnowledge({
         title: `Discord Fact from ${message.author.username}`,
         body: message.content,
         sourceUserId: athenaUserId,
         platform: "discord"
       });
     }
-
   } catch (err) {
     console.error("[Message Error]", err);
   }
@@ -135,20 +136,25 @@ client.on(Events.MessageCreate, async message => {
 client.once(Events.ClientReady, async () => {
   console.log(`[Athena] Online as ${client.user.tag}`);
 
-  // Centralize users
-  await centralizeAllUsers();
+  try {
+    // Centralize users
+    await centralizeAllUsers();
 
-  // Initialize background knowledge updater
-  await initKnowledgeUpdater(firestore, {
-    collection: "athena_knowledge",
-    intervalMs: 5 * 60 * 1000 // 5 min
-  });
+    // Initialize knowledge updater
+    knowledgeAPI = await initKnowledgeUpdater(firestore, {
+      collection: "athena_knowledge",
+      intervalMs: 5 * 60 * 1000 // 5 min
+    });
 
-  // Start autonomous knowledge gathering every 3 min
-  startAutonomousLearning(storeNewKnowledge, 180_000);
+    // Start autonomous knowledge gathering every 3 min
+    startAutonomousLearning(knowledgeAPI.storeNewKnowledge, 180_000);
 
-  const knowledge = await getKnowledgeBase();
-  console.log(`[Athena] Loaded ${knowledge.length} knowledge entries`);
+    // Load runtime knowledge cache
+    const knowledge = await getKnowledgeBase();
+    console.log(`[Athena] Loaded ${knowledge.length} knowledge entries`);
+  } catch (err) {
+    console.error("[READY] Error during setup:", err);
+  }
 });
 
 // ---------------- LOGIN ----------------
