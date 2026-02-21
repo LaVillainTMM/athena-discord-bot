@@ -6,7 +6,7 @@ import { centralizeAllUsers } from "./centralizeUsers.js";
 import { getOrCreateAthenaUser } from "./athenaUser.js";
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
-import { initKnowledgeUpdater } from "./lib/knowledgeUpdater.js";
+import { initKnowledgeUpdater, storeNewKnowledge, startAutonomousLearning } from "./lib/knowledgeUpdater.js";
 
 /* ---------------- CONSTANTS ---------------- */
 const NATION_ROLES = ["SleeperZ", "ESpireZ", "BoroZ", "PsycZ"];
@@ -49,7 +49,6 @@ async function getKnowledgeBase() {
 // ---------------- SAVE MESSAGE ----------------
 async function saveMessage(athenaUserId, message, aiResponse = null, source = "discord") {
   try {
-    // Store in messages only
     await firestore.collection("messages").add({
       user_id: athenaUserId,
       text: message.content,
@@ -91,22 +90,21 @@ client.on(Events.MessageCreate, async message => {
   const isDM = message.channel.type === ChannelType.DM || message.channel.type === ChannelType.GroupDM;
   const mentioned = message.mentions.has(client.user);
 
-  // Only respond to DMs, mentions, or allowed channels
   if (!isDM && !mentioned && !ALLOWED_CHANNELS.includes(message.channel.name.toLowerCase())) return;
 
   try {
     const athenaUserId = await getOrCreateAthenaUser("discord", message.author.id, message.author.username);
 
-    // Store all messages Athena sees in messages only
+    // Store all messages in messages collection
     await saveMessage(athenaUserId, message, null, isDM ? "dm" : mentioned ? "mention" : "channel");
 
     // Typing indicator
     await message.channel.sendTyping();
 
-    // TODO: Replace with your generative AI call (Gemini, etc.)
+    // Placeholder AI response
     const aiReply = `AI response placeholder for: ${message.content}`;
 
-    // Send reply in chunks if too long
+    // Reply in chunks if needed
     if (aiReply.length > 2000) {
       const parts = aiReply.match(/[\s\S]{1,1990}/g) || [aiReply];
       for (const p of parts) await message.reply(p);
@@ -114,11 +112,20 @@ client.on(Events.MessageCreate, async message => {
       await message.reply(aiReply);
     }
 
-    // Save the AI response along with user message
+    // Save the AI response alongside user message
     await saveMessage(athenaUserId, message, aiReply, isDM ? "dm" : mentioned ? "mention" : "channel");
 
-    // NOTE: Do NOT add messages automatically to knowledge_updates
-    // Only add entries there when Athena identifies new knowledge
+    // Automatically detect new knowledge from messages
+    // Example: simplistic fact detection (can be improved with NLP)
+    if (message.content.split(" ").length > 5) { // minimal heuristic
+      await storeNewKnowledge({
+        title: `Discord Fact from ${message.author.username}`,
+        body: message.content,
+        sourceUserId: athenaUserId,
+        platform: "discord"
+      });
+    }
+
   } catch (err) {
     console.error("[Message Error]", err);
   }
@@ -128,14 +135,17 @@ client.on(Events.MessageCreate, async message => {
 client.once(Events.ClientReady, async () => {
   console.log(`[Athena] Online as ${client.user.tag}`);
 
-  // Centralize all users
+  // Centralize users
   await centralizeAllUsers();
 
   // Initialize background knowledge updater
   await initKnowledgeUpdater(firestore, {
     collection: "athena_knowledge",
-    intervalMs: 5 * 60 * 1000
+    intervalMs: 5 * 60 * 1000 // 5 min
   });
+
+  // Start autonomous knowledge gathering every 3 min
+  startAutonomousLearning(storeNewKnowledge, 180_000);
 
   const knowledge = await getKnowledgeBase();
   console.log(`[Athena] Loaded ${knowledge.length} knowledge entries`);
