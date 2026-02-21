@@ -1,5 +1,7 @@
 // bot.js
 import "dotenv/config";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 import { Client, GatewayIntentBits, Events, ChannelType, Partials } from "discord.js";
 import { admin, firestore } from "./firebase.js";
 import { centralizeAllUsers } from "./centralizeUsers.js";
