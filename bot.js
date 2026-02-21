@@ -11,6 +11,9 @@ import {
   initKnowledgeUpdater,
   startAutonomousLearning
 } from "./lib/knowledgeUpdater.js";
+
+npm install firebase
+
 /* ---------------- CONSTANTS ---------------- */
 const NATION_ROLES = ["SleeperZ", "ESpireZ", "BoroZ", "PsycZ"];
 const ALLOWED_CHANNELS = ["chat", "questions"];
