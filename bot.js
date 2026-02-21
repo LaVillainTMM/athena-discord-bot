@@ -6,7 +6,6 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 
 import { admin, firestore } from "./firebase.js";
 
-/* ✅ CORRECT IMPORTS */
 import { getOrCreateAthenaUser as getOrCreateCentralUser } from "./athenaUser.js";
 import { centralizeAllUsers } from "./centralizeUsers.js";
 
