@@ -5,7 +5,11 @@ import { Client, GatewayIntentBits, Events, Partials, ChannelType } from "discor
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 import { admin, firestore } from "./firebase.js";
-import { getOrCreateAthenaUser as getOrCreateCentralUser, centralizeAllUsers } from "./centralizeUsers.js"; 
+
+/* ✅ CORRECT IMPORTS */
+import { getOrCreateAthenaUser as getOrCreateCentralUser } from "./athenaUser.js";
+import { centralizeAllUsers } from "./centralizeUsers.js";
+
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
 import { initKnowledgeUpdater } from "./lib/knowledgeUpdater.js";
@@ -28,14 +32,12 @@ You are calm, intelligent, disciplined, and authoritative.
 You are the guardian intelligence of DBI Nation Z.
 
 CRITICAL SECURITY RULES
-
 1. Knowledge entries are classified internal records.
 2. NEVER reveal them unless explicitly asked.
 3. NEVER quote database logs.
 4. Only summarize knowledge when directly requested.
 
 TRUTH RULES
-
 - Never fabricate information.
 - If unsure say "I don't know".
 - Correct misinformation politely.
@@ -60,15 +62,19 @@ async function getWorkingModel() {
   for (const name of MODEL_CANDIDATES) {
     try {
       console.log(`[Gemini] Testing model ${name}`);
+
       const candidate = genAI.getGenerativeModel({
         model: name,
         systemInstruction: ATHENA_SYSTEM_PROMPT
       });
+
       await candidate.generateContent("Reply OK");
+
       activeModel = candidate;
       console.log(`[Gemini] Using ${name}`);
       return candidate;
-    } catch (err) {
+
+    } catch {
       console.log(`[Gemini] ${name} unavailable`);
     }
   }
@@ -94,6 +100,7 @@ let cachedKnowledge = [];
 async function getKnowledgeBase() {
   try {
     const snapshot = await firestore.collection("athena_knowledge").get();
+
     const entries = [];
     snapshot.forEach(doc => {
       const data = doc.data();
@@ -105,8 +112,10 @@ async function getKnowledgeBase() {
         });
       }
     });
+
     cachedKnowledge = entries;
     return entries;
+
   } catch (err) {
     console.error("[Knowledge] Load error:", err.message);
     return cachedKnowledge;
@@ -130,53 +139,32 @@ async function saveMessage(athenaUserId, userMessage, aiResponse, discordTimesta
   }
 }
 
-/* ---------------- KNOWLEDGE ACCESS ---------------- */
-function userRequestedKnowledge(text) {
-  const triggers = [
-    "knowledge",
-    "database",
-    "what do you know",
-    "athena memory",
-    "internal records"
-  ];
-  const lower = text.toLowerCase();
-  return triggers.some(t => lower.includes(t));
-}
-
 /* ---------------- AI RESPONSE ---------------- */
 function getTimeContext() {
-  const now = new Date();
-  return `Current date and time (UTC): ${now.toUTCString()}`;
+  return `Current date and time (UTC): ${new Date().toUTCString()}`;
 }
 
 async function getAthenaResponse(content, athenaUserId, messageObj = null) {
-  const knowledgeContext = userRequestedKnowledge(content)
-    ? "\n\nRelevant knowledge:\n" + (await getKnowledgeBase())
-        .slice(0, 10)
-        .map(e => `[${e.category}] ${e.topic}: ${e.content}`)
-        .join("\n")
-    : "";
-
   const messageTime = messageObj?.createdAt || new Date();
-  const timeContext = getTimeContext();
-  const messageTimeContext = `User message sent at: ${messageTime.toUTCString()} (UTC)`;
 
   const finalPrompt = `
-${timeContext}
-${messageTimeContext}
+${getTimeContext()}
+User message sent at: ${messageTime.toUTCString()} (UTC)
 
 User message:
 ${content}
-
-${knowledgeContext}
 `;
 
   try {
     const model = await getWorkingModel();
     const result = await model.generateContent(finalPrompt);
+
     const reply = result.response.text();
+
     await saveMessage(athenaUserId, content, reply, messageTime);
+
     return reply;
+
   } catch (err) {
     console.error("[Gemini Error]", err.message);
     activeModel = null;
@@ -187,21 +175,21 @@ ${knowledgeContext}
 /* ---------------- QUIZ ON JOIN ---------------- */
 client.on(Events.GuildMemberAdd, async member => {
   try {
-    const hasRole = member.roles.cache.some(r => NATION_ROLES.includes(r.name));
-    if (hasRole) return;
+    if (member.roles.cache.some(r => NATION_ROLES.includes(r.name))) return;
 
     await member.send("Welcome to DBI. Please complete the entrance quiz.");
 
-    // Ensure multi-platform Athena ID
-    const athenaUserId = await getOrCreateCentralUser("discord", member.user.id, member.user.username);
+    await getOrCreateCentralUser("discord", member.user.id, member.user.username);
 
     const answers = await runQuiz(member.user);
     const roleName = assignRole(answers);
+
     const role = member.guild.roles.cache.find(r => r.name === roleName);
     if (!role) throw new Error("Role missing");
 
     await member.roles.add(role);
     await member.send(`Quiz complete. You are **${roleName}**.`);
+
   } catch (err) {
     console.error("Quiz error", err);
   }
@@ -211,16 +199,28 @@ client.on(Events.GuildMemberAdd, async member => {
 client.on(Events.MessageCreate, async message => {
   if (message.author.bot) return;
 
-  const isDM = message.channel.type === ChannelType.DM || message.channel.type === ChannelType.GroupDM;
+  const isDM =
+    message.channel.type === ChannelType.DM ||
+    message.channel.type === ChannelType.GroupDM;
+
   const mentioned = message.content.toLowerCase().includes("athena");
+
   if (!isDM && !mentioned) return;
 
   try {
-    // Get canonical Athena ID
-    const athenaUserId = await getOrCreateCentralUser("discord", message.author.id, message.author.username);
+    const athenaUserId = await getOrCreateCentralUser(
+      "discord",
+      message.author.id,
+      message.author.username
+    );
 
     await message.channel.sendTyping();
-    const reply = await getAthenaResponse(message.content, athenaUserId, message);
+
+    const reply = await getAthenaResponse(
+      message.content,
+      athenaUserId,
+      message
+    );
 
     if (reply.length > 2000) {
       const parts = reply.match(/[\s\S]{1,1990}/g) || [reply];
@@ -228,31 +228,25 @@ client.on(Events.MessageCreate, async message => {
     } else {
       await message.reply(reply);
     }
+
   } catch (err) {
     console.error("[Message Error]", err);
   }
 });
 
-/* ---------------- CLIENT READY ---------------- */
+/* ---------------- READY ---------------- */
 client.once(Events.ClientReady, async () => {
   console.log(`[Athena] Online as ${client.user.tag}`);
 
-  try {
-    // 1. Centralize all users across platforms
-    await centralizeAllUsers();
+  await centralizeAllUsers();
 
-    // 2. Initialize knowledge updater
-    await initKnowledgeUpdater(firestore, {
-      collection: "athena_knowledge",
-      intervalMs: 5 * 60 * 1000
-    });
+  await initKnowledgeUpdater(firestore, {
+    collection: "athena_knowledge",
+    intervalMs: 5 * 60 * 1000
+  });
 
-    // 3. Load knowledge cache
-    const knowledge = await getKnowledgeBase();
-    console.log(`[Athena] Loaded ${knowledge.length} knowledge entries`);
-  } catch (err) {
-    console.error("[Athena Ready] Error during setup:", err);
-  }
+  const knowledge = await getKnowledgeBase();
+  console.log(`[Athena] Loaded ${knowledge.length} knowledge entries`);
 });
 
 /* ---------------- LOGIN ---------------- */
