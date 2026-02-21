@@ -10,6 +10,24 @@ import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
 import { initKnowledgeUpdater } from "./lib/knowledgeUpdater.js";
 
+
+
+import { centralizeAllUsers } from "./centralizeUsers.js";
+
+// On bot ready
+client.once(Events.ClientReady, async () => {
+  console.log(`[Athena] Online as ${client.user.tag}`);
+
+  await centralizeAllUsers(); // ensures all accounts are unified
+  await initKnowledgeUpdater(firestore, { collection: "athena_knowledge", intervalMs: 5*60*1000 });
+
+  const knowledge = await getKnowledgeBase();
+  console.log(`[Athena] Loaded ${knowledge.length} knowledge entries`);
+});
+
+
+
+
 /* ---------------- ENV VALIDATION ---------------- */
 if (!process.env.DISCORD_TOKEN) throw new Error("DISCORD_TOKEN missing");
 if (!process.env.GOOGLE_GENAI_API_KEY) throw new Error("GOOGLE_GENAI_API_KEY missing");
