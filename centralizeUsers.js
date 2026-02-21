@@ -1,18 +1,12 @@
-// centralizeUsers.js — unify Discord, mobile, desktop users
-
+// centralizeUsers.js
 import { firestore } from "./firebase.js";
 import {
   getOrCreateAthenaUser,
-  linkPlatformId,
-  backfillMessages
+  linkPlatformId
 } from "./athenaUser.js";
 
-/**
- * Centralize all users and link platforms
- * Ensures all platform accounts share one canonical Athena ID
- */
 export async function centralizeAllUsers() {
-  console.log("[Centralize] Starting user centralization...");
+  console.log("[Centralize] Starting...");
 
   const platforms = ["discord", "mobile", "desktop"];
 
@@ -26,17 +20,19 @@ export async function centralizeAllUsers() {
 
     for (const doc of snapshot.docs) {
       const data = doc.data();
+
       const displayName =
-        data.username || data.displayName || doc.id;
+        data.username ||
+        data.displayName ||
+        doc.id;
 
-      // Ensure canonical Athena ID exists
-      const athenaUserId = await getOrCreateAthenaUser(
-        platform,
-        doc.id,
-        displayName
-      );
+      const athenaUserId =
+        await getOrCreateAthenaUser(
+          platform,
+          doc.id,
+          displayName
+        );
 
-      // Link platform mapping
       await linkPlatformId(
         athenaUserId,
         platform,
@@ -44,13 +40,10 @@ export async function centralizeAllUsers() {
       );
 
       console.log(
-        `[Centralize] ${platform} ID ${doc.id} → AthenaUser ${athenaUserId}`
+        `[Centralize] ${platform}:${doc.id} → ${athenaUserId}`
       );
     }
   }
 
-  // Backfill historical messages
-  await backfillMessages();
-
-  console.log("[Centralize] User centralization complete.");
+  console.log("[Centralize] Complete.");
 }
