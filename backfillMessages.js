@@ -1,113 +1,52 @@
 // backfillMessages.js
-import "dotenv/config";
-import { Client, GatewayIntentBits } from "discord.js";
 import { firestore, admin } from "./firebase.js";
-import { Timestamp } from "firebase-admin/firestore";
 
-if (!process.env.DISCORD_TOKEN) throw new Error("DISCORD_TOKEN missing");
+async function backfillMessages() {
+  console.log("[Backfill] Starting migration...");
 
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
-});
+  const batchSize = 200;
+  let lastDoc = null;
 
-// optional: backfill only messages after this date (ISO string)
-const BACKFILL_FROM = process.env.BACKFILL_FROM || null;
+  while (true) {
+    let query = firestore
+      .collection("messages")
+      .orderBy(admin.firestore.FieldPath.documentId())
+      .limit(batchSize);
 
-async function getCentralUserId(discordId) {
-  const snap = await firestore
-    .collection("athena_ai")
-    .where("platforms.discord.id", "==", discordId)
-    .limit(1)
-    .get();
-  if (snap.empty) return null;
-  return snap.docs[0].id; // document ID == central user UID
-}
+    if (lastDoc) query = query.startAfter(lastDoc);
 
-async function backfillGuildMessages() {
-  console.log("[Backfill] Starting message backfill...");
+    const snap = await query.get();
+    if (snap.empty) break;
 
-  for (const guild of client.guilds.cache.values()) {
-    console.log(`[Backfill] Processing guild: ${guild.name} (${guild.id})`);
+    for (const msg of snap.docs) {
+      const data = msg.data();
 
-    const channels = guild.channels.cache.filter(c => c.isTextBased());
+      const platform = data.platform || "discord";
+      const platformId = data.user_id;
 
-    for (const channel of channels.values()) {
-      console.log(`[Backfill] Fetching messages from channel: ${channel.name} (${channel.id})`);
+      const accountDoc = await firestore
+        .collection("athena_ai")
+        .doc("accounts")
+        .collection(platform)
+        .doc(platformId)
+        .get();
 
-      let lastId = null;
-      let fetched;
-      do {
-        fetched = await channel.messages.fetch({ limit: 100, before: lastId }).catch(err => {
-          console.error(`[Backfill] Failed fetching messages: ${err.message}`);
-          return null;
-        });
+      if (!accountDoc.exists) continue;
 
-        if (!fetched || fetched.size === 0) break;
-
-        const batch = [];
-
-        for (const msg of fetched.values()) {
-          if (msg.author.bot) continue;
-          if (BACKFILL_FROM && msg.createdAt < new Date(BACKFILL_FROM)) continue;
-
-          const userDocId = await getCentralUserId(msg.author.id);
-          if (!userDocId) {
-            console.warn(`[Backfill] No central user found for ${msg.author.username}`);
-            continue;
-          }
-
-          const timestamp = Timestamp.fromDate(msg.createdAt);
-
-          batch.push({
-            user_uid: userDocId,
-            platform: "discord",
-            user_id: msg.author.id,
-            username: msg.author.username,
-            content: msg.content,
-            guild_id: guild.id,
-            guild_name: guild.name,
-            channel_id: channel.id,
-            channel_name: channel.name,
-            timestamp: timestamp,
-            timezone_offset_minutes: msg.createdAt.getTimezoneOffset(),
-            fetchedAtUTC: Timestamp.now(),
-          });
-        }
-
-        while (batch.length > 0) {
-          const slice = batch.splice(0, 500);
-          const batchWrite = firestore.batch();
-          slice.forEach(doc => {
-            const ref = firestore.collection("messages").doc();
-            batchWrite.set(ref, doc);
-
-            // also update user message stats
-            const userRef = firestore.collection("athena_ai").doc(doc.user_uid);
-            batchWrite.update(userRef, {
-              "message_stats.total_messages": admin.firestore.FieldValue.increment(1),
-              "message_stats.last_message": doc.timestamp,
-            });
-          });
-          await batchWrite.commit();
-          console.log(`[Backfill] Wrote ${slice.length} messages to Firestore`);
-        }
-
-        lastId = fetched.last()?.id;
-      } while (fetched.size === 100);
-
-      console.log(`[Backfill] Finished channel: ${channel.name}`);
+      await msg.ref.update({
+        user_id: accountDoc.data().athenaUserId
+      });
     }
 
-    console.log(`[Backfill] Finished guild: ${guild.name}`);
+    lastDoc = snap.docs[snap.docs.length - 1];
   }
 
-  console.log("[Backfill] Message backfill completed.");
-  process.exit(0);
+  console.log("[Backfill] Complete.");
 }
 
-client.once("ready", async () => {
-  console.log(`[Backfill] Logged in as ${client.user.tag}`);
-  await backfillGuildMessages();
-});
-
-client.login(process.env.DISCORD_TOKEN);
+backfillMessages()
+  .then(() => process.exit())
+  .catch(err => {
+    console.error(err);
+    process.exit(1);
+  });
