@@ -107,7 +107,7 @@ client.on(Events.MessageCreate, async message => {
     await message.channel.sendTyping();
 
     // Placeholder AI response
-    const aiReply = `AI response placeholder for: ${message.content}`;
+    const aiReply = await generateAthenaReply(message.content);
 
     // Reply in chunks if needed
     if (aiReply.length > 2000) {
@@ -149,7 +149,9 @@ client.once(Events.ClientReady, async () => {
     });
 
     // Start autonomous knowledge gathering every 3 min
-    startAutonomousLearning(knowledgeAPI.storeNewKnowledge, 180_000);
+    import { startAutonomousLearning } from "./lib/knowledgeUpdater.js";
+
+startAutonomousLearning(180000);
 
     // Load runtime knowledge cache
     const knowledge = await getKnowledgeBase();
@@ -158,6 +160,33 @@ client.once(Events.ClientReady, async () => {
     console.error("[READY] Error during setup:", err);
   }
 });
+
+
+
+async function generateAthenaReply(messageContent) {
+  const model = genAI.getGenerativeModel({
+    model: "gemini-1.5-pro"
+  });
+
+  const prompt = `
+You are Athena, a wise analytical AI assistant.
+
+Respond intelligently and helpfully.
+
+User message:
+${messageContent}
+`;
+
+  const result = await model.generateContent(prompt);
+  return result.response.text();
+}
+
+
+
+
+
+
+
 
 // ---------------- LOGIN ----------------
 client.login(process.env.DISCORD_TOKEN);
