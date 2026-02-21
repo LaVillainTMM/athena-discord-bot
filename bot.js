@@ -1,9 +1,11 @@
+// bot.js — Discord bot fully integrated with multi-platform Athena IDs
+
 import "dotenv/config";
 import { Client, GatewayIntentBits, Events, Partials, ChannelType } from "discord.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 import { admin, firestore } from "./firebase.js";
-import { getOrCreateAthenaUser } from "./athenaUser.js";
+import { getOrCreateAthenaUser as getOrCreateCentralUser } from "./centralizeUsers.js"; // centralized users
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
 import { initKnowledgeUpdater } from "./lib/knowledgeUpdater.js";
@@ -190,6 +192,8 @@ client.on(Events.GuildMemberAdd, async member => {
 
     await member.send("Welcome to DBI. Please complete the entrance quiz.");
 
+    const athenaUserId = await getOrCreateCentralUser("discord", member.user.id, member.user.username);
+
     const answers = await runQuiz(member.user);
     const roleName = assignRole(answers);
     const role = member.guild.roles.cache.find(r => r.name === roleName);
@@ -211,7 +215,8 @@ client.on(Events.MessageCreate, async message => {
   if (!isDM && !mentioned) return;
 
   try {
-    const athenaUserId = await getOrCreateAthenaUser(message.author);
+    const athenaUserId = await getOrCreateCentralUser("discord", message.author.id, message.author.username);
+
     await message.channel.sendTyping();
     const reply = await getAthenaResponse(message.content, athenaUserId, message);
 
