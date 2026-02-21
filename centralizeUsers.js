@@ -1,91 +1,134 @@
-// centralizeAllUsers.js
+// centralizeUsers.js — unify Discord, mobile, desktop users
 import "dotenv/config";
 import { firestore, admin } from "./firebase.js";
 import { v4 as uuidv4 } from "uuid";
-import { Timestamp } from "firebase-admin/firestore";
 
-async function centralizeUsers() {
-  console.log("[Centralize] Starting Athena AI cross-platform centralization...");
+/**
+ * Utility to create or get Athena user canonical ID
+ */
+async function getOrCreateAthenaUser(platform, platformId, displayName = null) {
+  const accountsRef = firestore
+    .collection("athena_ai")
+    .doc("accounts")
+    .collection(platform);
 
-  const athenaCollection = firestore.collection("athena_ai");
+  const existing = await accountsRef.doc(platformId).get();
+  if (existing.exists) return existing.data().athenaUserId;
 
-  // --------------------- Helper function ---------------------
-  async function processPlatform(platformName, collectionName, idField) {
-    const snap = await firestore.collection(collectionName).get();
-    for (const doc of snap.docs) {
+  // Run transaction to ensure uniqueness
+  return await firestore.runTransaction(async tx => {
+    const recheck = await tx.get(accountsRef.doc(platformId));
+    if (recheck.exists) return recheck.data().athenaUserId;
+
+    const athenaUserId = uuidv4();
+
+    const userRoot = firestore
+      .collection("athena_ai")
+      .doc("users")
+      .collection("humans")
+      .doc(athenaUserId);
+
+    // Create core profile
+    tx.set(userRoot.collection("profile").doc("core"), {
+      displayName: displayName || platformId,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      role: null,
+      quizCompleted: false,
+      linkedDiscordIds: platform === "discord" ? [platformId] : [],
+      platforms: {
+        [platform]: { id: platformId, last_active: admin.firestore.FieldValue.serverTimestamp() }
+      },
+    });
+
+    // Link account
+    tx.set(accountsRef.doc(platformId), {
+      athenaUserId,
+      username: displayName || platformId,
+      linkedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return athenaUserId;
+  });
+}
+
+/**
+ * Link a new platform ID to an existing Athena user
+ */
+async function linkPlatformId(athenaUserId, platform, platformId) {
+  const coreRef = firestore
+    .collection("athena_ai")
+    .doc("users")
+    .collection("humans")
+    .doc(athenaUserId)
+    .collection("profile")
+    .doc("core");
+
+  await firestore.runTransaction(async tx => {
+    const doc = await tx.get(coreRef);
+    if (!doc.exists) throw new Error("Athena user not found");
+
+    const platforms = doc.data().platforms || {};
+    if (!platforms[platform]) platforms[platform] = {};
+    platforms[platform].id = platformId;
+    platforms[platform].last_active = admin.firestore.FieldValue.serverTimestamp();
+
+    tx.update(coreRef, { platforms });
+  });
+}
+
+/**
+ * Update all historical messages to reference correct Athena IDs
+ */
+async function backfillMessages() {
+  console.log("[Centralize] Updating messages to use canonical Athena IDs...");
+  const messagesSnap = await firestore.collection("messages").get();
+
+  for (const msg of messagesSnap.docs) {
+    const data = msg.data();
+    const platform = data.platform || "discord";
+    const platformId = data.user_id;
+
+    const accountsRef = firestore
+      .collection("athena_ai")
+      .doc("accounts")
+      .collection(platform);
+
+    const accountDoc = await accountsRef.doc(platformId).get();
+    if (!accountDoc.exists) continue;
+
+    const athenaUserId = accountDoc.data().athenaUserId;
+    await msg.ref.update({ user_id: athenaUserId });
+  }
+
+  console.log("[Centralize] Message backfill complete.");
+}
+
+/**
+ * Main script to centralize users
+ */
+async function centralizeAll() {
+  console.log("[Centralize] Starting Athena AI user centralization...");
+
+  const platforms = ["discord", "mobile", "desktop"];
+  for (const platform of platforms) {
+    const colRef = firestore.collection("athena_ai").doc("accounts").collection(platform);
+    const snapshot = await colRef.get();
+
+    for (const doc of snapshot.docs) {
       const data = doc.data();
-
-      // Find existing user by platform ID
-      const existingSnap = await athenaCollection
-        .where(`platforms.${platformName}.${idField}`, "==", data[idField])
-        .limit(1)
-        .get();
-
-      let userDocRef;
-      if (existingSnap.empty) {
-        // New user
-        const newUserUid = uuidv4();
-        userDocRef = athenaCollection.doc();
-        await userDocRef.set({
-          user_uid: newUserUid,
-          display_name: data.display_name || data.username || `${platformName}User`,
-          platforms: {
-            [platformName]: {
-              ...data,
-              last_active: data.last_active
-                ? Timestamp.fromDate(new Date(data.last_active))
-                : Timestamp.now(),
-            },
-          },
-          timezone: data.timezone || "UTC",
-          utc_offset_minutes: data.utc_offset_minutes || 0,
-          created_at: Timestamp.now(),
-          updated_at: Timestamp.now(),
-          message_stats: {
-            total_messages: 0,
-            last_message: null,
-          },
-        });
-        console.log(`[Centralize] Created new user (${platformName}): ${data.display_name || data.username}`);
-      } else {
-        // Existing user — merge platform data
-        userDocRef = existingSnap.docs[0].ref;
-        const existingData = existingSnap.docs[0].data();
-
-        await userDocRef.set(
-          {
-            platforms: {
-              ...existingData.platforms,
-              [platformName]: {
-                ...data,
-                last_active: data.last_active
-                  ? Timestamp.fromDate(new Date(data.last_active))
-                  : Timestamp.now(),
-              },
-            },
-            updated_at: Timestamp.now(),
-          },
-          { merge: true }
-        );
-        console.log(`[Centralize] Updated user (${platformName}): ${data.display_name || data.username}`);
-      }
+      const displayName = data.username || data.displayName || doc.id;
+      const athenaUserId = await getOrCreateAthenaUser(platform, doc.id, displayName);
+      await linkPlatformId(athenaUserId, platform, doc.id);
+      console.log(`[Centralize] ${platform} ID ${doc.id} → AthenaUser ${athenaUserId}`);
     }
   }
 
-  // --------------------- Discord ---------------------
-  await processPlatform("discord", "discord_users", "id");
-
-  // --------------------- Mobile ---------------------
-  await processPlatform("mobile", "mobile_users", "device_id");
-
-  // --------------------- Desktop ---------------------
-  await processPlatform("desktop", "desktop_users", "device_id");
-
-  console.log("[Centralize] Athena AI cross-platform centralization complete.");
+  await backfillMessages();
+  console.log("[Centralize] Athena AI centralization complete.");
   process.exit(0);
 }
 
-centralizeUsers().catch(err => {
+centralizeAll().catch(err => {
   console.error("[Centralize] Error:", err);
   process.exit(1);
 });
