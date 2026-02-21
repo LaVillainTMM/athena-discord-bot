@@ -1,4 +1,10 @@
 // bot.js
+
+
+
+import * as KU from './lib/knowledgeUpdater.js';
+console.log(KU);
+
 import "dotenv/config";
 import { Client, GatewayIntentBits, Events, ChannelType, Partials } from "discord.js";
 import { admin, firestore } from "./firebase.js";
