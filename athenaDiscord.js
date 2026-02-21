@@ -82,6 +82,17 @@ async function storeMessage(message) {
 
 // -------------------- Event: New Discord DM --------------------
 client.on("messageCreate", async (message) => {
+
+  if (!message || !message.author) return;
+
+  // ✅ ALWAYS STORE MESSAGE
+  await storeDiscordMessage(message);
+
+  // Ignore bot replies AFTER storing
+  if (message.author.bot) return;
+
+  // existing Athena reply logic continues here
+});
   try {
     if (message.author.bot) return;
 
