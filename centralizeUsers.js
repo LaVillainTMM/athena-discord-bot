@@ -1,7 +1,8 @@
 // centralizeUsers.js — unify Discord, mobile, desktop users
 import { firestore } from "./firebase.js";
 import { getOrCreateAthenaUser, linkPlatformId, backfillMessages } from "./athenaUser.js";
-
+import { getOrCreateAthenaUser as getOrCreateCentralUser } from "./athenaUser.js";
+import { centralizeAllUsers } from "./centralizeUsers.js";
 /**
  * Centralize all users and link platforms
  * This ensures all Discord, Mobile, Desktop accounts share one canonical Athena ID.
