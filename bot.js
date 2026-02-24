@@ -192,5 +192,30 @@ ${messageContent}
 
 
 
+import fetch from "node-fetch";
+
+async function firebaseTest() {
+  await fetch(
+    "https://athenaai-memory-default-rtdb.firebaseio.com/test_discord.json",
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        status: "discord online",
+        time: Date.now()
+      })
+    }
+  );
+}
+
+firebaseTest();
+
+
+
+
+
+
+
+
 // ---------------- LOGIN ----------------
 client.login(process.env.DISCORD_TOKEN);
