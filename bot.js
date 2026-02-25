@@ -9,12 +9,7 @@ import { centralizeAllUsers } from "./centralizeUsers.js";
 import { getOrCreateAthenaUser } from "./athenaUser.js";
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
-
-import {
-  initKnowledgeUpdater,
-  startAutonomousLearning
-} from "./lib/knowledgeUpdater.js";
-
+import { startAutonomousLearning } from "./lib/knowledgeUpdater.js";
 import { fetchFact } from "./lib/fetchFact.js";
 
 /* ---------------- CONSTANTS ---------------- */
