@@ -15,6 +15,8 @@ import {
   startAutonomousLearning
 } from "./lib/knowledgeUpdater.js";
 
+import { fetchFact } from "./lib/fetchFact.js";
+
 /* ---------------- CONSTANTS ---------------- */
 const NATION_ROLES = ["SleeperZ", "ESpireZ", "BoroZ", "PsycZ"];
 const ALLOWED_CHANNELS = ["chat", "questions"];
@@ -150,13 +152,13 @@ client.once(Events.ClientReady, async () => {
     // Initialize knowledge updater
     knowledgeAPI = await initKnowledgeUpdater(firestore, {
       collection: "athena_knowledge",
-      intervalMs: 5 * 60 * 1000 // 5 min
+      intervalMs: 240000 // 5 min
     });
 
     // Start autonomous knowledge gathering every 3 min
 
-startAutonomousLearning(180000);
-
+startAutonomousLearning(fetchFact);
+    
     // Load runtime knowledge cache
     const knowledge = await getKnowledgeBase();
     console.log(`[Athena] Loaded ${knowledge.length} knowledge entries`);
@@ -168,23 +170,28 @@ startAutonomousLearning(180000);
 
 
 async function generateAthenaReply(messageContent) {
-  const model = genAI.getGenerativeModel({
-    model: "gemini-1.5-pro"
-  });
+async function generateAthenaReply(messageContent) {
+  try {
+    const model = genAI.getGenerativeModel({
+      model: "gemini-1.5-pro"
+    });
 
-  const prompt = `
+    const result = await model.generateContent(`
 You are Athena, a wise analytical AI assistant.
 
-Respond intelligently and helpfully.
+Respond intelligently, calmly, and clearly.
 
-User message:
+User:
 ${messageContent}
-`;
+`);
 
-  const result = await model.generateContent(prompt);
-  return result.response.text();
+    return result.response.text();
+
+  } catch (err) {
+    console.error("[Gemini Error]", err);
+    return "My reasoning system encountered an interruption.";
+  }
 }
-
 
 
 
