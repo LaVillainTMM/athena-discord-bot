@@ -197,10 +197,6 @@ ${messageContent}
 
 
 
-
-
-import fetch from "node-fetch";
-
 async function firebaseTest() {
   await fetch(
     "https://athenaai-memory-default-rtdb.firebaseio.com/test_discord.json",
