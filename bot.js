@@ -143,11 +143,7 @@ client.once(Events.ClientReady, async () => {
     // Centralize users
     await centralizeAllUsers();
 
-    // Initialize knowledge updater
-    knowledgeAPI = await initKnowledgeUpdater(firestore, {
-      collection: "athena_knowledge",
-      intervalMs: 240000 // 5 min
-    });
+    
 
     // Start autonomous knowledge gathering every 3 min
 
