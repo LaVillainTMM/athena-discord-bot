@@ -168,8 +168,6 @@ startAutonomousLearning(fetchFact);
 });
 
 
-
-async function generateAthenaReply(messageContent) {
 async function generateAthenaReply(messageContent) {
   try {
     const model = genAI.getGenerativeModel({
