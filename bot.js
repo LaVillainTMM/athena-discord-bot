@@ -1,14 +1,14 @@
 // bot.js
 
 import "dotenv/config";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 import { Client, GatewayIntentBits, Events, ChannelType, Partials } from "discord.js";
 import { admin, firestore } from "./firebase.js";
 import { centralizeAllUsers } from "./centralizeUsers.js";
 import { getOrCreateAthenaUser } from "./athenaUser.js";
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
-import * as KU from './lib/knowledgeUpdater.js';
-console.log(KU);
 
 import {
   initKnowledgeUpdater,
