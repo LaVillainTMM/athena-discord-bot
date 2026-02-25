@@ -161,7 +161,7 @@ startAutonomousLearning(fetchFact);
 async function generateAthenaReply(messageContent) {
   try {
     const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-pro"
+      model: "gemini-3.1-pro"
     });
 
     const result = await model.generateContent(`
