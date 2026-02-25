@@ -12,7 +12,10 @@ console.log(KU);
 
 import {
   initKnowledgeUpdater,
-  startAutonomousLearning
+  import { startAutonomousLearning } from "./lib/knowledgeUpdater.js";
+import { fetchFact } from "./lib/fetchFact.js";
+
+startAutonomousLearning(fetchFact);
 } from "./lib/knowledgeUpdater.js";
 
 /* ---------------- CONSTANTS ---------------- */
