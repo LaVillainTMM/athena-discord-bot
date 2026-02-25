@@ -88,10 +88,9 @@ client.on(Events.GuildMemberAdd, async member => {
 });
 
 // ---------------- MESSAGE HANDLER ----------------
-let knowledgeAPI = null; // Will hold the updater API
 
 client.on(Events.MessageCreate, async message => {
-  if (!knowledgeAPI) return; // Ensure updater is initialized
+  
   if (message.author.bot) return;
 
   const isDM = message.channel.type === ChannelType.DM || message.channel.type === ChannelType.GroupDM;
