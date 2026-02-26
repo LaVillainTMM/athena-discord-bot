@@ -1,49 +1,41 @@
-// centralizeUsers.js
+// centralizeUsers.js — One-time migration utility
+// Run with: node centralizeUsers.js
+
 import { firestore } from "./firebase.js";
-import {
-  getOrCreateAthenaUser,
-  linkPlatformId
-} from "./athenaUser.js";
+import { getOrCreateAthenaUser, linkDiscordId } from "./athenaUser.js";
 
 export async function centralizeAllUsers() {
   console.log("[Centralize] Starting...");
 
-  const platforms = ["discord", "mobile", "desktop"];
+  const snapshot = await firestore.collection("discord_users").get();
 
-  for (const platform of platforms) {
-    const colRef = firestore
-      .collection("athena_ai")
-      .doc("accounts")
-      .collection(platform);
+  for (const docSnap of snapshot.docs) {
+    const data = docSnap.data();
+    const discordId = data.discordId || docSnap.id;
+    const displayName = data.username || data.displayName || docSnap.id;
 
-    const snapshot = await colRef.get();
+    try {
+      const fakeUser = {
+        id: discordId,
+        username: displayName,
+      };
 
-    for (const doc of snapshot.docs) {
-      const data = doc.data();
+      const athenaUserId = await getOrCreateAthenaUser(fakeUser);
 
-      const displayName =
-        data.username ||
-        data.displayName ||
-        doc.id;
+      await linkDiscordId(athenaUserId, discordId);
 
-      const athenaUserId =
-        await getOrCreateAthenaUser(
-          platform,
-          doc.id,
-          displayName
-        );
-
-      await linkPlatformId(
-        athenaUserId,
-        platform,
-        doc.id
-      );
-
-      console.log(
-        `[Centralize] ${platform}:${doc.id} → ${athenaUserId}`
-      );
+      console.log(`[Centralize] discord:${discordId} → athena:${athenaUserId}`);
+    } catch (err) {
+      console.error(`[Centralize] Failed for ${discordId}:`, err.message);
     }
   }
 
   console.log("[Centralize] Complete.");
 }
+
+centralizeAllUsers()
+  .then(() => process.exit(0))
+  .catch(err => {
+    console.error(err);
+    process.exit(1);
+  });

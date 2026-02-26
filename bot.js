@@ -5,6 +5,8 @@ import { admin, firestore } from "./firebase.js";
 import { getOrCreateAthenaUser } from "./athenaUser.js";
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
+import { getKnowledgeBase, startKnowledgeLearning } from "./knowledgeAPI.js";
+import { storeDiscordMessage } from "./athenaDiscord.js";
 
 if (!process.env.DISCORD_TOKEN) throw new Error("DISCORD_TOKEN missing");
 if (!process.env.GOOGLE_GENAI_API_KEY) throw new Error("GOOGLE_GENAI_API_KEY missing");
@@ -74,27 +76,6 @@ const client = new Client({
   ],
   partials: [Partials.Channel]
 });
-
-/* ---------------- SHARED KNOWLEDGE BASE ---------------- */
-let cachedKnowledge = [];
-
-async function getKnowledgeBase() {
-  try {
-    const snapshot = await firestore.collection("athena_knowledge").get();
-    const entries = [];
-    snapshot.forEach(doc => {
-      const data = doc.data();
-      if (data.verified) {
-        entries.push(`[${data.category}] ${data.topic}: ${data.content}`);
-      }
-    });
-    cachedKnowledge = entries;
-    return entries;
-  } catch (error) {
-    console.error("[Knowledge] Error:", error.message);
-    return cachedKnowledge;
-  }
-}
 
 /* ---------------- FIRESTORE MEMORY (synced paths) ---------------- */
 async function loadConversation(athenaUserId) {
@@ -249,6 +230,8 @@ async function getAthenaResponse(content, athenaUserId) {
 client.on(Events.MessageCreate, async message => {
   if (message.author.bot) return;
 
+  storeDiscordMessage(message).catch(() => {});
+
   const isDM = message.channel.type === ChannelType.DM;
   const mentionsAthena = message.content.toLowerCase().includes("athena");
   if (!isDM && !mentionsAthena) return;
@@ -327,6 +310,8 @@ client.once(Events.ClientReady, async () => {
 
   const knowledge = await getKnowledgeBase();
   console.log(`[Athena] Loaded ${knowledge.length} knowledge entries`);
+
+  startKnowledgeLearning();
 });
 
 /* ---------------- LOGIN ---------------- */
