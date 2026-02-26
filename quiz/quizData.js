@@ -21,182 +21,182 @@ export default [
   },
   {
     id: 3,
-    question: "What is your goal by being a member of DBI?",
+    question: "What drives your ambitions?",
     options: [
-      "Check up on Friends and making new ones",
-      "Neverending Competition",
-      "Being able to laugh and build with allies",
-      "Observing all"
+      "Mastery and excellence",
+      "Innovation and vision",
+      "Strength and resilience",
+      "Understanding the unseen"
     ]
   },
   {
     id: 4,
-    question: "What does unity mean to you?",
+    question: "Which trait do you value most in others?",
     options: [
-      "Everyone helping and encouraging each other",
-      "Everyone uniting for one common belief/goal",
-      "Standing together rather right or wrong",
-      "Helping each other grow with their strengths"
+      "Intelligence and creativity",
+      "Passion and determination",
+      "Honor and dependability",
+      "Intuition and awareness"
     ]
   },
   {
     id: 5,
-    question: "What is most important to you?",
+    question: "When facing the unknown, you tend to...",
     options: [
-      "Strength/Power/Status",
-      "Improvement",
-      "Benevolence",
-      "Understanding"
+      "Analyze every angle before acting",
+      "Charge forward with confidence",
+      "Protect those around you first",
+      "Read the room and adapt quietly"
     ]
   },
   {
     id: 6,
-    question: "Does joining DBI means committing to accountability?",
+    question: "Your ideal role in a team is...",
     options: [
-      "It should",
-      "Yes",
-      "No",
-      "Accountability should be mandatory?"
+      "The strategist who plans the approach",
+      "The visionary who inspires the team",
+      "The protector who holds the line",
+      "The observer who sees what others miss"
     ]
   },
   {
     id: 7,
-    question: "What should you do before reacting emotionally?",
+    question: "How do you handle pressure?",
     options: [
-      "Channel my emotions into something positive",
-      "Contemplate the entire situation",
-      "Wonder if it's really called for or needed for the situation",
-      "I normally react then think"
+      "Stay calm and think clearly",
+      "Channel it into motivation",
+      "Dig in and refuse to break",
+      "Detach and analyze from a distance"
     ]
   },
   {
     id: 8,
-    question: "What should you do if a rule is unclear?",
+    question: "What kind of legacy do you want to leave?",
     options: [
-      "Abide by it to the best of my knowledge",
-      "Ask a senior or veteran member for understanding",
-      "Rules?",
-      "I'm a lone wolf, I follow my own rules"
+      "One of wisdom and knowledge",
+      "One of bold change and progress",
+      "One of loyalty and unbreakable bonds",
+      "One of deep understanding of human nature"
     ]
   },
   {
     id: 9,
-    question: "Leadership should be used how?",
+    question: "Pick the phrase that resonates with you most:",
     options: [
-      "With an Iron Fist",
-      "With a Kind and Stern hand",
-      "With Confidence and Experience",
-      "The Leadership doesn't matter"
+      "Knowledge is the ultimate weapon",
+      "Fortune favors the bold",
+      "Strength through unity",
+      "The mind is deeper than the ocean"
     ]
   },
   {
     id: 10,
-    question: "Mistakes should be used as what?",
+    question: "When someone betrays your trust, you...",
     options: [
-      "A learning opportunity",
-      "A way of knowing that you don't know as much as you presume",
-      "A way of getting Feedback",
-      "Something to quietly notice and accept"
+      "Learn from it and adjust your strategy",
+      "Confront them directly and move on",
+      "Feel deeply hurt but remain loyal to others",
+      "Observe their pattern to understand why"
     ]
   },
   {
     id: 11,
-    question: "What should you do after breaking a rule?",
+    question: "Which element speaks to your soul?",
     options: [
-      "If I broke them there was a reason",
-      "What Rules?",
-      "Report the incident",
-      "See if it put me in bad standings"
+      "Air - clear, swift, and intellectual",
+      "Fire - passionate, bold, and transformative",
+      "Earth - stable, strong, and enduring",
+      "Water - deep, adaptive, and mysterious"
     ]
   },
   {
     id: 12,
-    question: "Do you value honesty or appearance?",
+    question: "How do you prefer to learn new things?",
     options: [
-      "Appearance distracts me",
-      "Does it look better with the lights on or off?",
-      "I need to have both",
-      "Neither, I stand with integrity"
+      "Research, reading, and analysis",
+      "Hands-on experimentation",
+      "Through mentors and trusted guides",
+      "Quiet observation and reflection"
     ]
   },
   {
     id: 13,
-    question: "Do you believe Patience contributes to growth?",
+    question: "In a crisis, people come to you for...",
     options: [
-      "Undoubtedly",
-      "Yes",
-      "No",
-      "Only in moderation"
+      "A clear-headed plan",
+      "Energy and motivation",
+      "Unwavering support",
+      "Insight into what's really going on"
     ]
   },
   {
     id: 14,
-    question: "You believe having a disciplined mindset comes from what?",
+    question: "Your greatest strength is...",
     options: [
-      "Learning to align your actions with your purpose",
-      "Learning to commit oneself to something other than oneself",
-      "When a person understands that every action plants a seed",
-      "When someone learns to respect their mind, body, and purpose"
+      "Your mind and ability to outthink problems",
+      "Your drive and refusal to quit",
+      "Your heart and devotion to your people",
+      "Your perception and emotional intelligence"
     ]
   },
   {
     id: 15,
-    question: "Where do you stand on helping others?",
+    question: "If you could master one discipline, it would be...",
     options: [
-      "They help me, I'll help them",
-      "I'll help anyone who asks",
-      "Not everyone should be helped",
-      "I'll help if I can"
+      "Philosophy and strategic thinking",
+      "Leadership and entrepreneurship",
+      "Martial arts and physical mastery",
+      "Psychology and human behavior"
     ]
   },
   {
     id: 16,
-    question: "Can you protect without attachment?",
+    question: "What do you fear most?",
     options: [
-      "Not many can overcome the wall that is attachment in its simplest form",
-      "What does protecting have to do with attachment?",
-      "I do a lot of things without attachment",
-      "I do as I must when it is needed of me"
+      "Ignorance and being unprepared",
+      "Stagnation and wasted potential",
+      "Failing the people who depend on you",
+      "Being misunderstood or unseen"
     ]
   },
   {
     id: 17,
-    question: "When is it time for war?",
+    question: "Your ideal day off involves...",
     options: [
-      "When boundaries are broken",
-      "After you have had time to be properly prepared",
-      "War can happen at any time, the real question is who is prepared for it",
-      "Why would anyone want to go to war?"
+      "Reading, chess, or solving puzzles",
+      "An adventure or creative project",
+      "Time with close friends and family",
+      "Journaling, meditating, or people-watching"
     ]
   },
   {
     id: 18,
-    question: "How long does peace last?",
+    question: "How do you view rules?",
     options: [
-      "Peace ends every time I blink",
-      "To have true peace, there must also be unrest",
-      "I've only just recently noticed a lapse of peace",
-      "Peace only dwells within the mind"
+      "Useful frameworks that can be optimized",
+      "Guidelines meant to be challenged",
+      "Important for maintaining order",
+      "Interesting reflections of who made them"
     ]
   },
   {
     id: 19,
-    question: "What did you think of the test?",
+    question: "When you win, what matters most is...",
     options: [
-      "Too Long",
-      "Too Short",
-      "More Depth",
-      "It's Fine"
+      "That your strategy was proven right",
+      "That you pushed past your limits",
+      "That your team succeeded together",
+      "That you understood the game better than anyone"
     ]
   },
   {
     id: 20,
-    question: "What's Next?",
+    question: "Final question: Which of Athena's qualities do you admire most?",
     options: [
-      "I don't know",
-      "VC calls with Friends",
-      "Form and Rule reading",
-      "Find new gamers"
+      "Her strategic brilliance and wisdom",
+      "Her courage and willingness to act",
+      "Her fierce protection of her people",
+      "Her deep insight into truth and justice"
     ]
   }
 ];

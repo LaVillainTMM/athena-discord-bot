@@ -1,10 +1,12 @@
 import quizData from "./quizData.js";
-import { rtdb as db } from "../firebase.js";
+import { firestore, admin } from "../firebase.js";
 
 export default async function runQuiz(user) {
-  const snapshot = await db.ref(`quizResponses/${user.id}`).once("value");
-  if (snapshot.exists() && snapshot.val().completed) {
-    return snapshot.val().answers;
+  const quizRef = firestore.collection("discord_quiz_results").doc(user.id);
+  const existing = await quizRef.get();
+
+  if (existing.exists && existing.data().completed) {
+    return existing.data().answers;
   }
 
   const answers = [];
@@ -42,10 +44,12 @@ export default async function runQuiz(user) {
     }
   }
 
-  await db.ref(`quizResponses/${user.id}`).set({
+  await quizRef.set({
     completed: true,
     answers,
-    completedAt: Date.now()
+    discordId: user.id,
+    username: user.username,
+    completedAt: admin.firestore.FieldValue.serverTimestamp()
   });
 
   return answers;

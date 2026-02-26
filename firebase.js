@@ -1,5 +1,5 @@
 import admin from "firebase-admin";
-// after const firestore = admin.firestore(); OR after importing { firestore } from "./firebase.js"
+
 function buildFromEnvVars() {
   const projectId = process.env.FIREBASE_PROJECT_ID;
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
@@ -53,7 +53,7 @@ if (!admin.apps.length) {
     console.error("[Firebase] Option 2: Set these 3 separate env vars instead:");
     console.error("[Firebase]   FIREBASE_PROJECT_ID=your-project-id");
     console.error("[Firebase]   FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxx@project.iam.gserviceaccount.com");
-    console.error("[Firebase]   FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\\nMIIE...\\n-----END PRIVATE KEY-----\\n");
+    console.error("[Firebase]   FIREBASE_PRIVATE_KEY=<your-private-key-from-service-account-json>");
     process.exit(1);
   }
 
