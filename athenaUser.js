@@ -13,6 +13,14 @@ function profileRef(athenaUserId) {
 }
 
 /* ────────────────────────────────────────────
+   FAST LOOKUP — discordId → athenaUserId
+──────────────────────────────────────────── */
+export async function getAthenaUserIdForDiscordId(discordId) {
+  const doc = await accountsCol("discord").doc(discordId).get();
+  return doc.exists ? doc.data().athenaUserId : null;
+}
+
+/* ────────────────────────────────────────────
    GET OR CREATE — full contact card on first visit
 ──────────────────────────────────────────── */
 export async function getOrCreateAthenaUser(discordUser) {
@@ -20,13 +28,12 @@ export async function getOrCreateAthenaUser(discordUser) {
   const existing = await discordAccountRef.get();
 
   if (existing.exists) {
-    /* update avatar / globalName each visit without a full transaction */
     const athenaUserId = existing.data().athenaUserId;
-    await profileRef(athenaUserId).update({
+    profileRef(athenaUserId).set({
       "discord.globalName": discordUser.globalName || discordUser.username,
       "discord.avatarURL": discordUser.displayAvatarURL?.({ size: 256 }) ?? null,
       lastSeen: admin.firestore.FieldValue.serverTimestamp(),
-    }).catch(() => {});
+    }, { merge: true }).catch(() => {});
     return athenaUserId;
   }
 
@@ -38,7 +45,6 @@ export async function getOrCreateAthenaUser(discordUser) {
     const avatarURL = discordUser.displayAvatarURL?.({ size: 256 }) ?? null;
     const now = admin.firestore.FieldValue.serverTimestamp();
 
-    /* ── contact card ── */
     tx.set(profileRef(athenaUserId), {
       athenaUserId,
       displayName: discordUser.globalName || discordUser.username,
@@ -48,6 +54,7 @@ export async function getOrCreateAthenaUser(discordUser) {
         username: discordUser.username,
         globalName: discordUser.globalName || discordUser.username,
         avatarURL,
+        linkedIds: [discordUser.id],
         linkedAt: now,
       },
 
@@ -65,12 +72,16 @@ export async function getOrCreateAthenaUser(discordUser) {
       },
       linkedDevices: [],
 
-      messageCount: 0,
+      messageCounts: {
+        total: 0,
+        discord: 0,
+        mobile: 0,
+        web: 0,
+      },
       lastSeen: now,
       createdAt: now,
     });
 
-    /* ── reverse-lookup index ── */
     tx.set(discordAccountRef, {
       athenaUserId,
       username: discordUser.username,
@@ -80,6 +91,78 @@ export async function getOrCreateAthenaUser(discordUser) {
 
     return athenaUserId;
   });
+}
+
+/* ────────────────────────────────────────────
+   MERGE DISCORD ACCOUNTS
+   Links a secondary Discord ID into the primary user's profile.
+   All messages from the secondary account are migrated.
+──────────────────────────────────────────── */
+export async function mergeDiscordAccounts(primaryDiscordId, secondaryDiscordId) {
+  if (primaryDiscordId === secondaryDiscordId) throw new Error("Cannot merge an account with itself");
+
+  const primaryDoc = await accountsCol("discord").doc(primaryDiscordId).get();
+  if (!primaryDoc.exists) throw new Error(`Primary Discord ID ${primaryDiscordId} has no Athena profile. They must message Athena first.`);
+  const primaryAthenaUserId = primaryDoc.data().athenaUserId;
+
+  const secondaryDoc = await accountsCol("discord").doc(secondaryDiscordId).get();
+  const secondaryAthenaUserId = secondaryDoc.exists ? secondaryDoc.data().athenaUserId : null;
+
+  if (secondaryAthenaUserId === primaryAthenaUserId) {
+    return { primaryAthenaUserId, alreadyMerged: true };
+  }
+
+  /* point secondary discord ID → primary athenaUserId */
+  await accountsCol("discord").doc(secondaryDiscordId).set({
+    athenaUserId: primaryAthenaUserId,
+    mergedInto: primaryAthenaUserId,
+    mergedFrom: secondaryAthenaUserId,
+    mergedAt: admin.firestore.FieldValue.serverTimestamp(),
+    username: secondaryDoc.data()?.username || secondaryDiscordId,
+  }, { merge: true });
+
+  /* add secondaryDiscordId to primary profile's linkedIds */
+  await profileRef(primaryAthenaUserId).set({
+    "discord.linkedIds": admin.firestore.FieldValue.arrayUnion(secondaryDiscordId),
+    "linkedPlatforms.discordAlts": admin.firestore.FieldValue.arrayUnion(secondaryDiscordId),
+  }, { merge: true });
+
+  /* if secondary had its own separate profile, mark it merged and migrate messages */
+  if (secondaryAthenaUserId && secondaryAthenaUserId !== primaryAthenaUserId) {
+    await profileRef(secondaryAthenaUserId).set({
+      mergedInto: primaryAthenaUserId,
+      mergedAt: admin.firestore.FieldValue.serverTimestamp(),
+      active: false,
+    }, { merge: true });
+
+    /* migrate messages in batches of 500 */
+    let migrated = 0;
+    let lastDoc = null;
+    while (true) {
+      let q = firestore.collection("messages")
+        .where("athena_user_id", "==", secondaryAthenaUserId)
+        .limit(500);
+      if (lastDoc) q = q.startAfter(lastDoc);
+
+      const snap = await q.get();
+      if (snap.empty) break;
+
+      const batch = firestore.batch();
+      snap.docs.forEach(doc => {
+        batch.update(doc.ref, {
+          athena_user_id: primaryAthenaUserId,
+          merged_from_athena_id: secondaryAthenaUserId,
+        });
+      });
+      await batch.commit();
+      migrated += snap.docs.length;
+      lastDoc = snap.docs[snap.docs.length - 1];
+    }
+
+    console.log(`[Merge] Migrated ${migrated} messages from ${secondaryAthenaUserId} → ${primaryAthenaUserId}`);
+  }
+
+  return { primaryAthenaUserId, secondaryAthenaUserId, alreadyMerged: false };
 }
 
 /* ────────────────────────────────────────────
@@ -97,28 +180,16 @@ export async function updateUserNation(athenaUserId, nation, quizMeta = {}) {
 }
 
 /* ────────────────────────────────────────────
-   RECORD LAST SEEN + INCREMENT MESSAGE COUNT
+   RECORD ACTIVITY — last seen + message count per platform
 ──────────────────────────────────────────── */
-export async function recordActivity(athenaUserId) {
-  await profileRef(athenaUserId).set({
+export async function recordActivity(athenaUserId, platform = "discord") {
+  const update = {
     lastSeen: admin.firestore.FieldValue.serverTimestamp(),
-    messageCount: admin.firestore.FieldValue.increment(1),
-  }, { merge: true }).catch(() => {});
-}
+    "messageCounts.total": admin.firestore.FieldValue.increment(1),
+  };
+  update[`messageCounts.${platform}`] = admin.firestore.FieldValue.increment(1);
 
-/* ────────────────────────────────────────────
-   LINK ADDITIONAL DISCORD ID (alts / bots)
-──────────────────────────────────────────── */
-export async function linkDiscordId(athenaUserId, discordId) {
-  await firestore.runTransaction(async tx => {
-    const ref = profileRef(athenaUserId);
-    const doc = await tx.get(ref);
-    if (!doc.exists) throw new Error("Athena user not found");
-
-    const ids = doc.data()?.discord?.linkedIds || [];
-    if (!ids.includes(discordId)) ids.push(discordId);
-    tx.update(ref, { "discord.linkedIds": ids });
-  });
+  await profileRef(athenaUserId).set(update, { merge: true }).catch(() => {});
 }
 
 /* ────────────────────────────────────────────
@@ -143,8 +214,21 @@ export async function linkMobileDevice(athenaUserId, deviceInfo) {
 export async function getUserProfileByDiscordId(discordId) {
   const accountDoc = await accountsCol("discord").doc(discordId).get();
   if (!accountDoc.exists) return null;
-
   const { athenaUserId } = accountDoc.data();
   const coreDoc = await profileRef(athenaUserId).get();
   return coreDoc.exists ? { athenaUserId, ...coreDoc.data() } : null;
+}
+
+/* ────────────────────────────────────────────
+   LINK ADDITIONAL DISCORD ID (legacy helper)
+──────────────────────────────────────────── */
+export async function linkDiscordId(athenaUserId, discordId) {
+  await firestore.runTransaction(async tx => {
+    const ref = profileRef(athenaUserId);
+    const doc = await tx.get(ref);
+    if (!doc.exists) throw new Error("Athena user not found");
+    const ids = doc.data()?.discord?.linkedIds || [];
+    if (!ids.includes(discordId)) ids.push(discordId);
+    tx.update(ref, { "discord.linkedIds": ids });
+  });
 }

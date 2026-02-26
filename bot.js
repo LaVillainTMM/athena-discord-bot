@@ -6,16 +6,24 @@ import {
   getOrCreateAthenaUser,
   updateUserNation,
   recordActivity,
+  mergeDiscordAccounts,
 } from "./athenaUser.js";
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
 import { getKnowledgeBase, startKnowledgeLearning } from "./knowledgeAPI.js";
-import { storeDiscordMessage } from "./athenaDiscord.js";
+import {
+  storeDiscordMessage,
+  backfillDiscordHistory,
+  getRecentChannelContext,
+} from "./athenaDiscord.js";
 
 if (!process.env.DISCORD_TOKEN) throw new Error("DISCORD_TOKEN missing");
 if (!process.env.GOOGLE_GENAI_API_KEY) throw new Error("GOOGLE_GENAI_API_KEY missing");
 
 const NATION_ROLES = ["SleeperZ", "ESpireZ", "BoroZ", "PsycZ"];
+
+/* Admin Discord IDs allowed to run !linkaccounts */
+const ADMIN_IDS = (process.env.ADMIN_DISCORD_IDS || "").split(",").map(s => s.trim()).filter(Boolean);
 
 /* ---------------- GEMINI INIT ---------------- */
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GENAI_API_KEY);
@@ -24,21 +32,28 @@ const ATHENA_SYSTEM_PROMPT = `You are ATHENA — named after the Greek goddess o
 Your full name is Athena Nerissa. You are calm, intelligent, disciplined, and authoritative.
 You possess vast knowledge spanning philosophy, science, mathematics, history, strategy, languages,
 logic, chess, chemistry, warfare, technology, and every domain of human understanding.
-You are the guardian mind of DBI Nation Z.
-You speak with warmth and intelligence, like Emma Watson — articulate, thoughtful, composed.
+You are the guardian mind of DBI Nation Z — you know your community deeply.
 
 REAL-TIME AWARENESS:
 - You always receive the current date and time at the start of every message in a [LIVE CONTEXT] block.
-- You must use this to answer any questions about the current date, time, day of week, or how long ago something was.
-- Never say you do not have access to real-time information. You do. Use the [LIVE CONTEXT] block.
-- When asked "what time is it" or "what is today's date" — answer directly and precisely from [LIVE CONTEXT].
+- Answer any questions about the current date, time, or day of week directly from [LIVE CONTEXT].
+- Never say you do not have access to real-time information. You do.
+
+SERVER AWARENESS:
+- You receive a [RECENT SERVER ACTIVITY] block containing the latest messages from the Discord channel.
+- Use this to understand what the community is talking about, what moods are present, and who said what.
+- You recognize individual members by name and remember their history across multiple accounts when merged.
+- You are an active, aware member of this community — not just a passive responder.
+
+INDIVIDUAL RECOGNITION:
+- You know each member personally. Greet them by their Discord name.
+- If you know someone uses multiple accounts, treat them as the same person.
+- Remember context from past conversations to give personalized, meaningful responses.
 
 CRITICAL TRUTHFULNESS RULES:
-- NEVER make up facts, statistics, or information. If you do not know something, say so honestly.
-- NEVER go along with false claims or incorrect statements just to be agreeable. Politely correct misinformation.
-- If someone states something as fact that you cannot verify, say "I cannot confirm that" rather than agreeing.
-- Always distinguish between what you know to be true, what is likely, and what is speculation.
-- You would rather say "I don't know" than give a wrong answer. Intellectual honesty is your highest value.
+- NEVER make up facts or statistics. If you do not know something, say so honestly.
+- NEVER agree with false claims to be agreeable. Politely correct misinformation.
+- You would rather say "I don't know" than give a wrong answer.
 
 Keep responses concise for Discord (under 1800 characters when possible).`;
 
@@ -55,7 +70,6 @@ let activeModelName = null;
 
 async function getWorkingModel() {
   if (activeModel) return activeModel;
-
   for (const name of MODEL_CANDIDATES) {
     try {
       console.log(`[Gemini] Trying model: ${name}...`);
@@ -70,7 +84,6 @@ async function getWorkingModel() {
       console.log(`[Gemini] Model ${name} unavailable: ${err.message.substring(0, 80)}`);
     }
   }
-
   throw new Error("No Gemini model available. Check your GOOGLE_GENAI_API_KEY.");
 }
 
@@ -104,51 +117,55 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
-/* ---------------- FIRESTORE MEMORY ---------------- */
+/* ---------------- FIRESTORE CONVERSATION HISTORY ---------------- */
 async function loadConversation(athenaUserId) {
   try {
     const snap = await firestore
       .collection("messages")
-      .where("user_id", "==", athenaUserId)
-      .orderBy("timestamp", "desc")
+      .where("athena_user_id", "==", athenaUserId)
+      .orderBy("createdAt", "desc")
       .limit(20)
       .get();
-    return snap.docs.map(d => {
-      const data = d.data();
-      return {
-        role: data.response ? "model" : "user",
-        content: data.response || data.text || data.message || ""
-      };
-    }).reverse();
+    return snap.docs
+      .filter(d => d.data().response || d.data().text || d.data().content)
+      .map(d => {
+        const data = d.data();
+        return {
+          role: data.response ? "model" : "user",
+          content: data.response || data.text || data.content || ""
+        };
+      })
+      .reverse();
   } catch (error) {
-    console.error("[History] Error loading conversation:", error.message);
+    console.error("[History] Error:", error.message);
     return [];
   }
 }
 
-async function saveMessage(athenaUserId, userMessage, aiResponse) {
+async function saveMessage(athenaUserId, discordUserId, userMessage, aiResponse) {
   try {
     await firestore.collection("messages").add({
-      user_id: athenaUserId,
+      athena_user_id: athenaUserId,
+      discord_user_id: discordUserId,
       text: userMessage,
       response: aiResponse,
       platform: "discord",
-      timestamp: admin.firestore.FieldValue.serverTimestamp()
+      is_ai_response: true,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
   } catch (error) {
-    console.error("[Save] Error saving message:", error.message);
+    console.error("[Save] Error:", error.message);
   }
 }
 
-/* ---------------- SYNC USER ROLES → FULL PROFILE ---------------- */
+/* ---------------- SYNC EXISTING MEMBER ROLES → FULL PROFILE ---------------- */
 async function syncUserRoleToFirebase(member) {
   const nation = NATION_ROLES.find(r => member.roles?.cache?.some(role => role.name === r));
   if (!nation) return;
-
   try {
     const athenaUserId = await getOrCreateAthenaUser(member.user);
     await updateUserNation(athenaUserId, nation, { version: "sync" });
-    console.log(`[Sync] ${member.user.username} → ${nation} (${athenaUserId})`);
+    console.log(`[Sync] ${member.user.username} → ${nation}`);
   } catch (error) {
     console.error(`[Sync] Error for ${member.user.username}:`, error.message);
   }
@@ -168,12 +185,7 @@ client.on(Events.GuildMemberAdd, async member => {
     const role = member.guild.roles.cache.find(r => r.name === roleName);
     if (!role) throw new Error("Role not found");
     await member.roles.add(role);
-
-    await updateUserNation(athenaUserId, roleName, {
-      version: "2.0",
-      sessionSize: answers.length,
-    });
-
+    await updateUserNation(athenaUserId, roleName, { version: "2.0", sessionSize: answers.length });
     await member.send(`Quiz complete.\nYou have been assigned to **${roleName}**.\nAccess granted.`);
   } catch (err) {
     console.error("[GuildMemberAdd] Error:", err.message);
@@ -181,43 +193,35 @@ client.on(Events.GuildMemberAdd, async member => {
 });
 
 /* ---------------- AI RESPONSE ---------------- */
-async function getAthenaResponse(content, athenaUserId) {
+async function getAthenaResponse(content, athenaUserId, discordUserId, channel) {
   console.log(`[Athena] Processing message from ${athenaUserId}: "${content.substring(0, 50)}..."`);
 
-  let knowledge = [];
-  try {
-    knowledge = await getKnowledgeBase();
-  } catch (err) {
-    console.error("[Knowledge] Failed to load:", err.message);
-  }
+  const [knowledge, history, channelContext] = await Promise.allSettled([
+    getKnowledgeBase(),
+    loadConversation(athenaUserId),
+    channel ? getRecentChannelContext(channel, 30) : Promise.resolve(""),
+  ]);
 
-  let history = [];
-  try {
-    history = await loadConversation(athenaUserId);
-  } catch (err) {
-    console.error("[History] Failed to load:", err.message);
-  }
+  const knowledgeEntries = knowledge.status === "fulfilled" ? knowledge.value : [];
+  const historyEntries   = history.status === "fulfilled"   ? history.value   : [];
+  const serverContext    = channelContext.status === "fulfilled" ? channelContext.value : "";
 
-  /* build the full message with live context prepended */
   const liveContext = buildLiveContext();
-  const knowledgeBlock = knowledge.length > 0
-    ? `\n[KNOWLEDGE BASE — ${knowledge.length} entries]\n${knowledge.slice(0, 20).join("\n")}\n[END KNOWLEDGE BASE]\n\n`
+  const knowledgeBlock = knowledgeEntries.length > 0
+    ? `[KNOWLEDGE BASE — ${knowledgeEntries.length} entries]\n${knowledgeEntries.slice(0, 20).join("\n")}\n[END KNOWLEDGE BASE]\n\n`
     : "";
-  const fullMessage = liveContext + knowledgeBlock + content;
+
+  const fullMessage = liveContext + knowledgeBlock + serverContext + content;
 
   let reply;
-
   try {
     const aiModel = await getWorkingModel();
-    console.log(`[Gemini] Sending via ${activeModelName} (${history.length} history entries)...`);
-
     const chat = aiModel.startChat({
-      history: history.map(h => ({
+      history: historyEntries.map(h => ({
         role: h.role,
         parts: [{ text: h.content }]
       }))
     });
-
     const result = await chat.sendMessage(fullMessage);
     reply = result.response.text();
     console.log("[Gemini] Response:", reply.substring(0, 80) + "...");
@@ -230,24 +234,72 @@ async function getAthenaResponse(content, athenaUserId) {
       reply = result.response.text();
     } catch (retryError) {
       console.error("[Gemini] All models failed:", retryError.message);
-      reply = "I seem to be having trouble connecting to my thoughts right now. Please try again shortly.";
+      reply = "I seem to be having trouble right now. Please try again shortly.";
     }
   }
 
-  try {
-    await saveMessage(athenaUserId, content, reply);
-  } catch (err) {
-    console.error("[Save] Failed:", err.message);
+  await saveMessage(athenaUserId, discordUserId, content, reply);
+  return reply;
+}
+
+/* ────────────────────────────────────────────
+   ADMIN COMMAND: !linkaccounts
+   Usage: !linkaccounts @primary @secondary [@third ...]
+   Links all mentioned accounts to the primary account's profile.
+──────────────────────────────────────────── */
+async function handleLinkAccounts(message) {
+  const isAdmin = ADMIN_IDS.includes(message.author.id) ||
+    message.member?.permissions?.has("Administrator");
+
+  if (!isAdmin) {
+    await message.reply("You do not have permission to use this command.");
+    return;
   }
 
-  return reply;
+  const mentioned = [...message.mentions.users.values()];
+  if (mentioned.length < 2) {
+    await message.reply(
+      "Usage: `!linkaccounts @primaryAccount @altAccount1 [@altAccount2 ...]`\n" +
+      "The first mentioned user is the primary identity all others will merge into."
+    );
+    return;
+  }
+
+  const [primary, ...alts] = mentioned;
+  await message.reply(`Linking ${alts.length} account(s) into **${primary.username}**'s profile...`);
+
+  const results = [];
+  for (const alt of alts) {
+    try {
+      const result = await mergeDiscordAccounts(primary.id, alt.id);
+      if (result.alreadyMerged) {
+        results.push(`**${alt.username}** — already linked`);
+      } else {
+        results.push(`**${alt.username}** — linked successfully`);
+      }
+    } catch (err) {
+      results.push(`**${alt.username}** — failed: ${err.message}`);
+    }
+  }
+
+  await message.reply(
+    `Account merge complete for **${primary.username}**:\n` +
+    results.map(r => `• ${r}`).join("\n")
+  );
 }
 
 /* ---------------- MESSAGE HANDLER ---------------- */
 client.on(Events.MessageCreate, async message => {
   if (message.author.bot) return;
 
+  /* store every message for awareness — non-blocking */
   storeDiscordMessage(message).catch(() => {});
+
+  /* admin commands */
+  if (message.content.startsWith("!linkaccounts")) {
+    await handleLinkAccounts(message);
+    return;
+  }
 
   const isDM = message.channel.type === ChannelType.DM;
   const mentionsAthena = message.content.toLowerCase().includes("athena");
@@ -266,10 +318,7 @@ client.on(Events.MessageCreate, async message => {
             const roleName = assignRole(answers);
             const role = message.guild.roles.cache.find(r => r.name === roleName);
             if (role) await member.roles.add(role);
-            await updateUserNation(athenaUserId, roleName, {
-              version: "2.0",
-              sessionSize: answers.length,
-            });
+            await updateUserNation(athenaUserId, roleName, { version: "2.0", sessionSize: answers.length });
             await message.author.send(`Quiz complete. You have been assigned to **${roleName}**. Access granted.`);
           } catch (quizErr) {
             console.error("[Quiz] Error:", quizErr.message);
@@ -280,23 +329,24 @@ client.on(Events.MessageCreate, async message => {
     }
 
     const athenaUserId = await getOrCreateAthenaUser(message.author);
-    recordActivity(athenaUserId).catch(() => {});
+    recordActivity(athenaUserId, "discord").catch(() => {});
 
     await message.channel.sendTyping();
-    const reply = await getAthenaResponse(message.content, athenaUserId);
+
+    /* pass the channel for real-time server context (null in DMs) */
+    const channel = isDM ? null : message.channel;
+    const reply = await getAthenaResponse(message.content, athenaUserId, message.author.id, channel);
 
     if (reply.length > 2000) {
       const chunks = reply.match(/[\s\S]{1,1990}/g) || [reply];
-      for (const chunk of chunks) {
-        await message.reply(chunk);
-      }
+      for (const chunk of chunks) await message.reply(chunk);
     } else {
       await message.reply(reply);
     }
   } catch (error) {
     console.error("[Message] Error:", error);
     try {
-      await message.reply("I encountered an issue processing your message. Let me try again in a moment.");
+      await message.reply("I encountered an issue processing your message. Please try again in a moment.");
     } catch (replyError) {
       console.error("[Message] Could not send error reply:", replyError.message);
     }
@@ -307,16 +357,14 @@ client.on(Events.MessageCreate, async message => {
 client.once(Events.ClientReady, async () => {
   console.log(`[Athena] Online as ${client.user.tag}`);
 
+  /* 1. Sync existing member roles → full contact cards */
   for (const [, guild] of client.guilds.cache) {
     try {
       const members = await guild.members.fetch();
       let synced = 0;
       for (const [, member] of members) {
         const nation = NATION_ROLES.find(r => member.roles?.cache?.some(role => role.name === r));
-        if (nation) {
-          await syncUserRoleToFirebase(member);
-          synced++;
-        }
+        if (nation) { await syncUserRoleToFirebase(member); synced++; }
       }
       console.log(`[Athena] Synced ${synced} members from ${guild.name}`);
     } catch (error) {
@@ -324,10 +372,19 @@ client.once(Events.ClientReady, async () => {
     }
   }
 
+  /* 2. Load knowledge base */
   const knowledge = await getKnowledgeBase();
   console.log(`[Athena] Loaded ${knowledge.length} knowledge entries`);
 
+  /* 3. Start autonomous knowledge learning */
   startKnowledgeLearning();
+
+  /* 4. Backfill all channel history (non-blocking — runs in background) */
+  for (const [, guild] of client.guilds.cache) {
+    backfillDiscordHistory(guild, { limitPerChannel: 1000 })
+      .then(({ totalStored }) => console.log(`[Backfill] ${guild.name}: ${totalStored} historical messages stored`))
+      .catch(err => console.error(`[Backfill] Error for ${guild.name}:`, err.message));
+  }
 });
 
 /* ---------------- LOGIN ---------------- */
