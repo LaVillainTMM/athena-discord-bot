@@ -1,6 +1,7 @@
 // bot.js
 
 import "dotenv/config";
+import { knowledgeAPI } from "./knowledgeAPI.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { VertexAI } from "@google-cloud/vertexai";
 import { Client, GatewayIntentBits, Events, ChannelType, Partials } from "discord.js";
