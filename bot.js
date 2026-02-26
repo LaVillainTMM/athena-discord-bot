@@ -9,6 +9,7 @@ import { centralizeAllUsers } from "./centralizeUsers.js";
 import { getOrCreateAthenaUser } from "./athenaUser.js";
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
+import { VertexAI } from "@google-cloud/vertexai";
 import { startAutonomousLearning } from "./lib/knowledgeUpdater.js";
 import { fetchFact } from "./lib/fetchFact.js";
 
@@ -158,29 +159,42 @@ startAutonomousLearning(fetchFact);
 });
 
 
+const vertexAI = new VertexAI({
+  project: process.env.GCLOUD_PROJECT,
+  location: "us-central1"
+});
+
 async function generateAthenaReply(messageContent) {
   try {
-    const model = genAI.getGenerativeModel({
+    const model = vertexAI.getGenerativeModel({
       model: "gemini-1.5-pro"
     });
 
-    const result = await model.generateContent(`
-You are Athena, a wise analytical AI assistant.
+    const result = await model.generateContent({
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: `You are Athena, a wise analytical AI assistant.
 
 Respond intelligently, calmly, and clearly.
 
 User:
-${messageContent}
-`);
+${messageContent}`
+            }
+          ]
+        }
+      ]
+    });
 
-    return result.response.text();
+    return result.response.candidates[0].content.parts[0].text;
 
   } catch (err) {
-    console.error("[Gemini Error]", err);
+    console.error("[Vertex Gemini Error]", err);
     return "My reasoning system encountered an interruption.";
   }
 }
-
 
 
 
