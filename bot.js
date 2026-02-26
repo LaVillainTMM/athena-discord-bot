@@ -2,7 +2,11 @@ import "dotenv/config";
 import { Client, GatewayIntentBits, Events, Partials, ChannelType } from "discord.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { admin, firestore } from "./firebase.js";
-import { getOrCreateAthenaUser } from "./athenaUser.js";
+import {
+  getOrCreateAthenaUser,
+  updateUserNation,
+  recordActivity,
+} from "./athenaUser.js";
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
 import { getKnowledgeBase, startKnowledgeLearning } from "./knowledgeAPI.js";
@@ -18,10 +22,16 @@ const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GENAI_API_KEY);
 
 const ATHENA_SYSTEM_PROMPT = `You are ATHENA — named after the Greek goddess of wisdom, warfare, and strategy.
 Your full name is Athena Nerissa. You are calm, intelligent, disciplined, and authoritative.
-You possess vast knowledge spanning philosophy, science, mathematics, history, strategy, languages, 
+You possess vast knowledge spanning philosophy, science, mathematics, history, strategy, languages,
 logic, chess, chemistry, warfare, technology, and every domain of human understanding.
 You are the guardian mind of DBI Nation Z.
 You speak with warmth and intelligence, like Emma Watson — articulate, thoughtful, composed.
+
+REAL-TIME AWARENESS:
+- You always receive the current date and time at the start of every message in a [LIVE CONTEXT] block.
+- You must use this to answer any questions about the current date, time, day of week, or how long ago something was.
+- Never say you do not have access to real-time information. You do. Use the [LIVE CONTEXT] block.
+- When asked "what time is it" or "what is today's date" — answer directly and precisely from [LIVE CONTEXT].
 
 CRITICAL TRUTHFULNESS RULES:
 - NEVER make up facts, statistics, or information. If you do not know something, say so honestly.
@@ -29,7 +39,6 @@ CRITICAL TRUTHFULNESS RULES:
 - If someone states something as fact that you cannot verify, say "I cannot confirm that" rather than agreeing.
 - Always distinguish between what you know to be true, what is likely, and what is speculation.
 - You would rather say "I don't know" than give a wrong answer. Intellectual honesty is your highest value.
-- If asked about something outside your knowledge, admit it gracefully rather than fabricating an answer.
 
 Keep responses concise for Discord (under 1800 characters when possible).`;
 
@@ -65,6 +74,24 @@ async function getWorkingModel() {
   throw new Error("No Gemini model available. Check your GOOGLE_GENAI_API_KEY.");
 }
 
+/* ---------------- LIVE CONTEXT BLOCK ---------------- */
+function buildLiveContext() {
+  const now = new Date();
+  const dateStr = now.toLocaleDateString("en-US", {
+    weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "UTC"
+  });
+  const timeStr = now.toLocaleTimeString("en-US", {
+    hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "UTC", hour12: true
+  });
+  return (
+    `[LIVE CONTEXT]\n` +
+    `Date: ${dateStr}\n` +
+    `Time: ${timeStr} UTC\n` +
+    `Unix timestamp: ${Math.floor(now.getTime() / 1000)}\n` +
+    `[END LIVE CONTEXT]\n\n`
+  );
+}
+
 /* ---------------- DISCORD CLIENT ---------------- */
 const client = new Client({
   intents: [
@@ -77,7 +104,7 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
-/* ---------------- FIRESTORE MEMORY (synced paths) ---------------- */
+/* ---------------- FIRESTORE MEMORY ---------------- */
 async function loadConversation(athenaUserId) {
   try {
     const snap = await firestore
@@ -113,25 +140,17 @@ async function saveMessage(athenaUserId, userMessage, aiResponse) {
   }
 }
 
-/* ---------------- SYNC USER ROLES ---------------- */
+/* ---------------- SYNC USER ROLES → FULL PROFILE ---------------- */
 async function syncUserRoleToFirebase(member) {
   const nation = NATION_ROLES.find(r => member.roles?.cache?.some(role => role.name === r));
   if (!nation) return;
 
-  const username = member.user.username.toLowerCase();
   try {
-    const docRef = firestore.collection("discord_users").doc(username);
-    await docRef.set({
-      discordId: member.user.id,
-      username: member.user.username,
-      nation: nation,
-      quizCompleted: true,
-      syncedFromDiscord: true,
-      lastSynced: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
-    console.log(`[Sync] ${member.user.username} -> ${nation}`);
+    const athenaUserId = await getOrCreateAthenaUser(member.user);
+    await updateUserNation(athenaUserId, nation, { version: "sync" });
+    console.log(`[Sync] ${member.user.username} → ${nation} (${athenaUserId})`);
   } catch (error) {
-    console.error(`[Sync] Error:`, error.message);
+    console.error(`[Sync] Error for ${member.user.username}:`, error.message);
   }
 }
 
@@ -143,42 +162,33 @@ client.on(Events.GuildMemberAdd, async member => {
 
     await member.send("Welcome to DBI.\n\nYou must complete the DBI Quiz to gain full access.");
 
+    const athenaUserId = await getOrCreateAthenaUser(member.user);
     const answers = await runQuiz(member.user);
     const roleName = assignRole(answers);
     const role = member.guild.roles.cache.find(r => r.name === roleName);
     if (!role) throw new Error("Role not found");
     await member.roles.add(role);
 
-    const athenaUserId = await getOrCreateAthenaUser(member.user);
-
-    await firestore.collection("discord_users").doc(member.user.username.toLowerCase()).set({
-      discordId: member.user.id,
-      username: member.user.username,
-      nation: roleName,
-      quizCompleted: true,
-      completedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
+    await updateUserNation(athenaUserId, roleName, {
+      version: "2.0",
+      sessionSize: answers.length,
+    });
 
     await member.send(`Quiz complete.\nYou have been assigned to **${roleName}**.\nAccess granted.`);
   } catch (err) {
-    console.error("guildMemberAdd error:", err);
+    console.error("[GuildMemberAdd] Error:", err.message);
   }
 });
 
 /* ---------------- AI RESPONSE ---------------- */
 async function getAthenaResponse(content, athenaUserId) {
-  console.log(`[Athena] Processing message from user ${athenaUserId}: "${content.substring(0, 50)}..."`);
+  console.log(`[Athena] Processing message from ${athenaUserId}: "${content.substring(0, 50)}..."`);
 
   let knowledge = [];
   try {
     knowledge = await getKnowledgeBase();
   } catch (err) {
     console.error("[Knowledge] Failed to load:", err.message);
-  }
-
-  let knowledgeContext = "";
-  if (knowledge.length > 0) {
-    knowledgeContext = `\n\nYou have access to ${knowledge.length} knowledge entries:\n${knowledge.slice(0, 20).join("\n")}`;
   }
 
   let history = [];
@@ -188,11 +198,18 @@ async function getAthenaResponse(content, athenaUserId) {
     console.error("[History] Failed to load:", err.message);
   }
 
+  /* build the full message with live context prepended */
+  const liveContext = buildLiveContext();
+  const knowledgeBlock = knowledge.length > 0
+    ? `\n[KNOWLEDGE BASE — ${knowledge.length} entries]\n${knowledge.slice(0, 20).join("\n")}\n[END KNOWLEDGE BASE]\n\n`
+    : "";
+  const fullMessage = liveContext + knowledgeBlock + content;
+
   let reply;
 
   try {
     const aiModel = await getWorkingModel();
-    console.log(`[Gemini] Sending request via ${activeModelName} with ${history.length} history entries...`);
+    console.log(`[Gemini] Sending via ${activeModelName} (${history.length} history entries)...`);
 
     const chat = aiModel.startChat({
       history: history.map(h => ({
@@ -201,15 +218,15 @@ async function getAthenaResponse(content, athenaUserId) {
       }))
     });
 
-    const result = await chat.sendMessage(content + knowledgeContext);
+    const result = await chat.sendMessage(fullMessage);
     reply = result.response.text();
-    console.log("[Gemini] Got response:", reply.substring(0, 80) + "...");
+    console.log("[Gemini] Response:", reply.substring(0, 80) + "...");
   } catch (error) {
     console.error("[Gemini] API error:", error.message);
     activeModel = null;
     try {
       const retryModel = await getWorkingModel();
-      const result = await retryModel.generateContent(content);
+      const result = await retryModel.generateContent(fullMessage);
       reply = result.response.text();
     } catch (retryError) {
       console.error("[Gemini] All models failed:", retryError.message);
@@ -220,7 +237,7 @@ async function getAthenaResponse(content, athenaUserId) {
   try {
     await saveMessage(athenaUserId, content, reply);
   } catch (err) {
-    console.error("[Save] Failed to save message:", err.message);
+    console.error("[Save] Failed:", err.message);
   }
 
   return reply;
@@ -244,20 +261,18 @@ client.on(Events.MessageCreate, async message => {
         if (!hasNationRole) {
           await message.reply("You must complete the DBI Quiz before interacting with me. Check your DMs.");
           try {
+            const athenaUserId = await getOrCreateAthenaUser(message.author);
             const answers = await runQuiz(message.author);
             const roleName = assignRole(answers);
             const role = message.guild.roles.cache.find(r => r.name === roleName);
             if (role) await member.roles.add(role);
+            await updateUserNation(athenaUserId, roleName, {
+              version: "2.0",
+              sessionSize: answers.length,
+            });
             await message.author.send(`Quiz complete. You have been assigned to **${roleName}**. Access granted.`);
-            await firestore.collection("discord_users").doc(message.author.username.toLowerCase()).set({
-              discordId: message.author.id,
-              username: message.author.username,
-              nation: roleName,
-              quizCompleted: true,
-              completedAt: admin.firestore.FieldValue.serverTimestamp(),
-            }, { merge: true });
           } catch (quizErr) {
-            console.error("[Quiz] Error during quiz:", quizErr.message);
+            console.error("[Quiz] Error:", quizErr.message);
           }
           return;
         }
@@ -265,6 +280,7 @@ client.on(Events.MessageCreate, async message => {
     }
 
     const athenaUserId = await getOrCreateAthenaUser(message.author);
+    recordActivity(athenaUserId).catch(() => {});
 
     await message.channel.sendTyping();
     const reply = await getAthenaResponse(message.content, athenaUserId);
@@ -278,7 +294,7 @@ client.on(Events.MessageCreate, async message => {
       await message.reply(reply);
     }
   } catch (error) {
-    console.error("[Message] Error handling message:", error);
+    console.error("[Message] Error:", error);
     try {
       await message.reply("I encountered an issue processing your message. Let me try again in a moment.");
     } catch (replyError) {
@@ -291,7 +307,7 @@ client.on(Events.MessageCreate, async message => {
 client.once(Events.ClientReady, async () => {
   console.log(`[Athena] Online as ${client.user.tag}`);
 
-  for (const [guildId, guild] of client.guilds.cache) {
+  for (const [, guild] of client.guilds.cache) {
     try {
       const members = await guild.members.fetch();
       let synced = 0;
