@@ -2,14 +2,13 @@
 
 import "dotenv/config";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+import { VertexAI } from "@google-cloud/vertexai";
 import { Client, GatewayIntentBits, Events, ChannelType, Partials } from "discord.js";
 import { admin, firestore } from "./firebase.js";
 import { centralizeAllUsers } from "./centralizeUsers.js";
 import { getOrCreateAthenaUser } from "./athenaUser.js";
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
-import { VertexAI } from "@google-cloud/vertexai";
 import { startAutonomousLearning } from "./lib/knowledgeUpdater.js";
 import { fetchFact } from "./lib/fetchFact.js";
 
@@ -32,7 +31,14 @@ const client = new Client({
 /* ---------------- KNOWLEDGE CACHE ---------------- */
 let cachedKnowledge = [];
 
-// ---------------- Load knowledge from athena_knowledge ----------------
+/* ---------------- GEMINI + VERTEX INIT ---------------- */
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const vertexAI = new VertexAI({
+  project: process.env.GCLOUD_PROJECT,
+  location: "us-central1"
+});
+
+/* ---------------- KNOWLEDGE BASE ---------------- */
 async function getKnowledgeBase() {
   try {
     const snapshot = await firestore.collection("athena_knowledge").get();
@@ -51,7 +57,7 @@ async function getKnowledgeBase() {
   }
 }
 
-// ---------------- SAVE MESSAGE ----------------
+/* ---------------- SAVE MESSAGE ---------------- */
 async function saveMessage(athenaUserId, message, aiResponse = null, source = "discord") {
   try {
     await firestore.collection("messages").add({
@@ -70,7 +76,7 @@ async function saveMessage(athenaUserId, message, aiResponse = null, source = "d
   }
 }
 
-// ---------------- QUIZ ON JOIN ----------------
+/* ---------------- QUIZ ON JOIN ---------------- */
 client.on(Events.GuildMemberAdd, async member => {
   try {
     if (member.roles.cache.some(r => NATION_ROLES.includes(r.name))) return;
@@ -88,10 +94,54 @@ client.on(Events.GuildMemberAdd, async member => {
   }
 });
 
-// ---------------- MESSAGE HANDLER ----------------
+/* ---------------- GENERATIVE AI FUNCTIONS ---------------- */
 
+// Gemini API primary
+async function generateGeminiAPIReply(messageContent) {
+  try {
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+    const result = await model.generateContent(`
+You are Athena, a wise analytical AI assistant.
+
+Respond intelligently, calmly, and clearly.
+
+User:
+${messageContent}`);
+    return result.response.text();
+  } catch (err) {
+    console.error("[Gemini API Error]", err);
+    throw err;
+  }
+}
+
+// Vertex AI fallback
+async function generateVertexReply(messageContent) {
+  try {
+    const model = vertexAI.getGenerativeModel({ model: "gemini-1.5-pro-002" });
+    const result = await model.generateContent({
+      contents: [
+        { role: "user", parts: [{ text: messageContent }] }
+      ]
+    });
+    return result.response.candidates[0].content.parts[0].text;
+  } catch (err) {
+    console.error("[Vertex AI Error]", err);
+    return "Athena is currently unable to respond.";
+  }
+}
+
+// Unified function with fallback
+async function generateAthenaReply(messageContent) {
+  try {
+    return await generateGeminiAPIReply(messageContent);
+  } catch (err) {
+    console.log("⚠️ Gemini API failed, switching to Vertex...");
+    return await generateVertexReply(messageContent);
+  }
+}
+
+/* ---------------- MESSAGE HANDLER ---------------- */
 client.on(Events.MessageCreate, async message => {
-  
   if (message.author.bot) return;
 
   const isDM = message.channel.type === ChannelType.DM || message.channel.type === ChannelType.GroupDM;
@@ -108,7 +158,7 @@ client.on(Events.MessageCreate, async message => {
     // Typing indicator
     await message.channel.sendTyping();
 
-    // Placeholder AI response
+    // Generate AI reply
     const aiReply = await generateAthenaReply(message.content);
 
     // Reply in chunks if needed
@@ -136,21 +186,17 @@ client.on(Events.MessageCreate, async message => {
   }
 });
 
-// ---------------- READY ----------------
+/* ---------------- READY ---------------- */
 client.once(Events.ClientReady, async () => {
   console.log(`[Athena] Online as ${client.user.tag}`);
 
   try {
-    // Centralize users
     await centralizeAllUsers();
 
-    
+    // Start autonomous learning
+    startAutonomousLearning(fetchFact);
 
-    // Start autonomous knowledge gathering every 3 min
-
-startAutonomousLearning(fetchFact);
-    
-    // Load runtime knowledge cache
+    // Load cached knowledge
     const knowledge = await getKnowledgeBase();
     console.log(`[Athena] Loaded ${knowledge.length} knowledge entries`);
   } catch (err) {
@@ -158,69 +204,18 @@ startAutonomousLearning(fetchFact);
   }
 });
 
-
-const vertexAI = new VertexAI({
-  project: process.env.GCLOUD_PROJECT,
-  location: "us-central1"
-});
-
-async function generateAthenaReply(messageContent) {
-  try {
-    const model = vertexAI.getGenerativeModel({
-      model: "gemini-1.5-pro"
-    });
-
-    const result = await model.generateContent({
-      contents: [
-        {
-          role: "user",
-          parts: [
-            {
-              text: `You are Athena, a wise analytical AI assistant.
-
-Respond intelligently, calmly, and clearly.
-
-User:
-${messageContent}`
-            }
-          ]
-        }
-      ]
-    });
-
-    return result.response.candidates[0].content.parts[0].text;
-
-  } catch (err) {
-    console.error("[Vertex Gemini Error]", err);
-    return "My reasoning system encountered an interruption.";
-  }
-}
-
-
-
-
+/* ---------------- FIREBASE TEST ---------------- */
 async function firebaseTest() {
   await fetch(
     "https://athenaai-memory-default-rtdb.firebaseio.com/test_discord.json",
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        status: "discord online",
-        time: Date.now()
-      })
+      body: JSON.stringify({ status: "discord online", time: Date.now() })
     }
   );
 }
-
 firebaseTest();
 
-
-
-
-
-
-
-
-// ---------------- LOGIN ----------------
+/* ---------------- LOGIN ---------------- */
 client.login(process.env.DISCORD_TOKEN);
