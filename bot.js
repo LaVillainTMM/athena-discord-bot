@@ -15,6 +15,8 @@ import {
   storeDiscordMessage,
   backfillDiscordHistory,
   getRecentChannelContext,
+  buildServerContext,
+  getKnownChannels,
 } from "./athenaDiscord.js";
 
 if (!process.env.DISCORD_TOKEN) throw new Error("DISCORD_TOKEN missing");
@@ -105,6 +107,62 @@ function buildLiveContext() {
   );
 }
 
+/* ────────────────────────────────────────────
+   PARSE HISTORY REQUEST
+   Detects when a user is asking about past server activity,
+   extracts the channel name and time range they want.
+──────────────────────────────────────────── */
+function parseHistoryRequest(content, knownChannels = []) {
+  const lower = content.toLowerCase();
+
+  const historyKeywords = [
+    "last week", "past week", "this week",
+    "yesterday", "last night", "last few days", "past few days",
+    "last month", "past month",
+    "last 3 days", "past 3 days", "last 2 days",
+    "what happened", "what was talked", "what was said", "what did people say",
+    "what has been said", "what have people been", "what's been happening",
+    "what has been happening", "catch me up", "catch up",
+    "summarize", "summary", "recap", "what was discussed",
+    "chat history", "conversation history", "what did people talk",
+    "fill me in", "what went on",
+  ];
+
+  const isHistoryRequest = historyKeywords.some(kw => lower.includes(kw));
+  if (!isHistoryRequest) return null;
+
+  /* extract time range */
+  let daysBack = 7;
+  if (lower.includes("last month") || lower.includes("past month")) daysBack = 30;
+  else if (lower.includes("last week") || lower.includes("past week") || lower.includes("this week")) daysBack = 7;
+  else if (lower.includes("last 3 days") || lower.includes("past 3 days")) daysBack = 3;
+  else if (lower.includes("last 2 days")) daysBack = 2;
+  else if (lower.includes("yesterday") || lower.includes("last night")) daysBack = 2;
+  else if (lower.includes("today") || lower.includes("last few hours")) daysBack = 1;
+
+  /* extract channel name — try #slug first, then fuzzy match known channels */
+  let channelName = null;
+
+  const hashMatch = content.match(/#([\w-]+)/);
+  if (hashMatch) {
+    channelName = hashMatch[1].toLowerCase();
+  } else {
+    /* look for "in <channel name>" or "the <channel name> channel/chat" */
+    const phraseMatch = content.match(
+      /(?:in|from|for)\s+(?:the\s+)?([A-Za-z][\w\s]{1,30}?)(?:\s+channel|\s+chat|\s+room|\s+server)?\s*(?:for|from|over|this|last|past|\?|$)/i
+    );
+    if (phraseMatch) {
+      const candidate = phraseMatch[1].trim().toLowerCase().replace(/\s+/g, "-");
+      /* fuzzy match against known channel names */
+      const exact = knownChannels.find(c => c === candidate);
+      const partial = knownChannels.find(c => c.includes(candidate) || candidate.includes(c));
+      channelName = exact || partial || candidate;
+    }
+  }
+
+  return { isHistoryRequest: true, channelName, daysBack };
+}
+
 /* ---------------- DISCORD CLIENT ---------------- */
 const client = new Client({
   intents: [
@@ -193,18 +251,47 @@ client.on(Events.GuildMemberAdd, async member => {
 });
 
 /* ---------------- AI RESPONSE ---------------- */
-async function getAthenaResponse(content, athenaUserId, discordUserId, channel) {
+async function getAthenaResponse(content, athenaUserId, discordUserId, channel, guild) {
   console.log(`[Athena] Processing message from ${athenaUserId}: "${content.substring(0, 50)}..."`);
 
-  const [knowledge, history, channelContext] = await Promise.allSettled([
+  /* detect if this is a history/summary request before fetching context */
+  const guildId = guild?.id || null;
+  let knownChannels = [];
+  if (guildId) {
+    knownChannels = await getKnownChannels(guildId).catch(() => []);
+  }
+  const historyRequest = parseHistoryRequest(content, knownChannels);
+
+  const [knowledge, history] = await Promise.allSettled([
     getKnowledgeBase(),
     loadConversation(athenaUserId),
-    channel ? getRecentChannelContext(channel, 30) : Promise.resolve(""),
   ]);
 
   const knowledgeEntries = knowledge.status === "fulfilled" ? knowledge.value : [];
   const historyEntries   = history.status === "fulfilled"   ? history.value   : [];
-  const serverContext    = channelContext.status === "fulfilled" ? channelContext.value : "";
+
+  /* build server context:
+     - history request → query Firebase for the relevant channel + time range
+     - normal message  → get last 30 live messages from current channel */
+  let serverContext = "";
+  if (historyRequest) {
+    console.log(`[Athena] History request detected — channel="${historyRequest.channelName}" days=${historyRequest.daysBack}`);
+    serverContext = await buildServerContext({
+      channelName: historyRequest.channelName,
+      guildId,
+      daysBack: historyRequest.daysBack,
+      limit: 200,
+    });
+    if (!serverContext && historyRequest.channelName) {
+      /* try without channel filter as fallback */
+      serverContext = await buildServerContext({ guildId, daysBack: historyRequest.daysBack, limit: 200 });
+    }
+    if (!serverContext) {
+      serverContext = `[NOTE: No stored messages found for the requested scope. The channel may not have been backfilled yet.]\n\n`;
+    }
+  } else if (channel) {
+    serverContext = await getRecentChannelContext(channel, 30).catch(() => "");
+  }
 
   const liveContext = buildLiveContext();
   const knowledgeBlock = knowledgeEntries.length > 0
@@ -333,9 +420,10 @@ client.on(Events.MessageCreate, async message => {
 
     await message.channel.sendTyping();
 
-    /* pass the channel for real-time server context (null in DMs) */
+    /* pass the channel and guild for context (null in DMs) */
     const channel = isDM ? null : message.channel;
-    const reply = await getAthenaResponse(message.content, athenaUserId, message.author.id, channel);
+    const guild = isDM ? null : message.guild;
+    const reply = await getAthenaResponse(message.content, athenaUserId, message.author.id, channel, guild);
 
     if (reply.length > 2000) {
       const chunks = reply.match(/[\s\S]{1,1990}/g) || [reply];
