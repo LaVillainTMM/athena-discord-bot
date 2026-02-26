@@ -112,8 +112,10 @@ function buildLiveContext() {
    Detects when a user is asking about past server activity,
    extracts the channel name and time range they want.
 ──────────────────────────────────────────── */
-function parseHistoryRequest(content, knownChannels = []) {
+function parseHistoryRequest(content, knownChannelData = {}) {
   const lower = content.toLowerCase();
+  const knownChannels = knownChannelData.channels || [];
+  const knownThreads  = knownChannelData.threads  || [];
 
   const historyKeywords = [
     "last week", "past week", "this week",
@@ -125,7 +127,7 @@ function parseHistoryRequest(content, knownChannels = []) {
     "what has been happening", "catch me up", "catch up",
     "summarize", "summary", "recap", "what was discussed",
     "chat history", "conversation history", "what did people talk",
-    "fill me in", "what went on",
+    "fill me in", "what went on", "read the", "read me", "tell me what",
   ];
 
   const isHistoryRequest = historyKeywords.some(kw => lower.includes(kw));
@@ -133,34 +135,45 @@ function parseHistoryRequest(content, knownChannels = []) {
 
   /* extract time range */
   let daysBack = 7;
-  if (lower.includes("last month") || lower.includes("past month")) daysBack = 30;
-  else if (lower.includes("last week") || lower.includes("past week") || lower.includes("this week")) daysBack = 7;
+  if      (lower.includes("last month")  || lower.includes("past month"))  daysBack = 30;
+  else if (lower.includes("last week")   || lower.includes("past week") || lower.includes("this week")) daysBack = 7;
   else if (lower.includes("last 3 days") || lower.includes("past 3 days")) daysBack = 3;
-  else if (lower.includes("last 2 days")) daysBack = 2;
-  else if (lower.includes("yesterday") || lower.includes("last night")) daysBack = 2;
-  else if (lower.includes("today") || lower.includes("last few hours")) daysBack = 1;
+  else if (lower.includes("last 2 days"))  daysBack = 2;
+  else if (lower.includes("yesterday")   || lower.includes("last night"))   daysBack = 2;
+  else if (lower.includes("today")       || lower.includes("last few hours")) daysBack = 1;
 
-  /* extract channel name — try #slug first, then fuzzy match known channels */
+  /* ── extract location ── */
   let channelName = null;
+  let threadName  = null;
 
-  const hashMatch = content.match(/#([\w-]+)/);
+  /* explicit #channel or #channel/thread syntax */
+  const hashMatch = content.match(/#([\w-]+)(?:\/([\w-]+))?/);
   if (hashMatch) {
     channelName = hashMatch[1].toLowerCase();
+    if (hashMatch[2]) threadName = hashMatch[2].toLowerCase();
   } else {
-    /* look for "in <channel name>" or "the <channel name> channel/chat" */
+    /* "in <Name>" / "the <Name> channel/chat/forum/thread" */
     const phraseMatch = content.match(
-      /(?:in|from|for)\s+(?:the\s+)?([A-Za-z][\w\s]{1,30}?)(?:\s+channel|\s+chat|\s+room|\s+server)?\s*(?:for|from|over|this|last|past|\?|$)/i
+      /(?:in|from|for)\s+(?:the\s+)?([A-Za-z][\w\s]{1,30}?)(?:\s+channel|\s+chat|\s+room|\s+forum|\s+thread|\s+server)?\s*(?:for|from|over|this|last|past|\?|$)/i
     );
     if (phraseMatch) {
       const candidate = phraseMatch[1].trim().toLowerCase().replace(/\s+/g, "-");
-      /* fuzzy match against known channel names */
-      const exact = knownChannels.find(c => c === candidate);
-      const partial = knownChannels.find(c => c.includes(candidate) || candidate.includes(c));
-      channelName = exact || partial || candidate;
+
+      /* check threads first (more specific) */
+      const exactThread   = knownThreads.find(t => t === candidate);
+      const partialThread = knownThreads.find(t => t.includes(candidate) || candidate.includes(t));
+      if (exactThread || partialThread) {
+        threadName = exactThread || partialThread;
+      } else {
+        /* then channels */
+        const exactChan   = knownChannels.find(c => c === candidate);
+        const partialChan = knownChannels.find(c => c.includes(candidate) || candidate.includes(c));
+        channelName = exactChan || partialChan || candidate;
+      }
     }
   }
 
-  return { isHistoryRequest: true, channelName, daysBack };
+  return { isHistoryRequest: true, channelName, threadName, daysBack };
 }
 
 /* ---------------- DISCORD CLIENT ---------------- */
@@ -256,11 +269,11 @@ async function getAthenaResponse(content, athenaUserId, discordUserId, channel, 
 
   /* detect if this is a history/summary request before fetching context */
   const guildId = guild?.id || null;
-  let knownChannels = [];
+  let knownChannelData = { channels: [], threads: [], all: [] };
   if (guildId) {
-    knownChannels = await getKnownChannels(guildId).catch(() => []);
+    knownChannelData = await getKnownChannels(guildId).catch(() => ({ channels: [], threads: [], all: [] }));
   }
-  const historyRequest = parseHistoryRequest(content, knownChannels);
+  const historyRequest = parseHistoryRequest(content, knownChannelData);
 
   const [knowledge, history] = await Promise.allSettled([
     getKnowledgeBase(),
@@ -275,19 +288,21 @@ async function getAthenaResponse(content, athenaUserId, discordUserId, channel, 
      - normal message  → get last 30 live messages from current channel */
   let serverContext = "";
   if (historyRequest) {
-    console.log(`[Athena] History request detected — channel="${historyRequest.channelName}" days=${historyRequest.daysBack}`);
+    console.log(`[Athena] History request — channel="${historyRequest.channelName}" thread="${historyRequest.threadName}" days=${historyRequest.daysBack}`);
     serverContext = await buildServerContext({
       channelName: historyRequest.channelName,
+      threadName:  historyRequest.threadName,
       guildId,
       daysBack: historyRequest.daysBack,
       limit: 200,
     });
-    if (!serverContext && historyRequest.channelName) {
-      /* try without channel filter as fallback */
+    /* fallback 1: drop channel filter, try server-wide */
+    if (!serverContext && (historyRequest.channelName || historyRequest.threadName)) {
       serverContext = await buildServerContext({ guildId, daysBack: historyRequest.daysBack, limit: 200 });
     }
+    /* fallback 2: tell Athena why there's no data */
     if (!serverContext) {
-      serverContext = `[NOTE: No stored messages found for the requested scope. The channel may not have been backfilled yet.]\n\n`;
+      serverContext = `[NOTE: No stored messages found for that scope yet. The backfill may still be running.]\n\n`;
     }
   } else if (channel) {
     serverContext = await getRecentChannelContext(channel, 30).catch(() => "");

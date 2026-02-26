@@ -1,152 +1,256 @@
-// athenaDiscord.js — Message logging, backfill, and context utilities
+// athenaDiscord.js — Full message logging, backfill, and context for ALL channel types
 
 import { ChannelType } from "discord.js";
 import { firestore, admin } from "./firebase.js";
 import { getOrCreateAthenaUser, getAthenaUserIdForDiscordId } from "./athenaUser.js";
 
+/* ── Channel types that can have messages fetched directly ── */
+const DIRECT_MESSAGE_TYPES = new Set([
+  ChannelType.GuildText,
+  ChannelType.GuildAnnouncement,
+  ChannelType.GuildVoice,
+  ChannelType.GuildStageVoice,
+  ChannelType.PublicThread,
+  ChannelType.PrivateThread,
+  ChannelType.AnnouncementThread,
+]);
+
+/* ── Channel types whose content lives entirely in threads ── */
+const THREAD_CONTAINER_TYPES = new Set([
+  ChannelType.GuildForum,
+  ChannelType.GuildMedia,
+]);
+
+/* ── All top-level types that may also have threads ── */
+const THREAD_PARENT_TYPES = new Set([
+  ChannelType.GuildText,
+  ChannelType.GuildAnnouncement,
+  ChannelType.GuildForum,
+  ChannelType.GuildMedia,
+]);
+
 /* ────────────────────────────────────────────
-   STORE A SINGLE DISCORD MESSAGE
-   Saves immediately, then resolves athenaUserId async (non-blocking).
+   BUILD MESSAGE PAYLOAD
+   Consistent schema whether live or backfilled.
+──────────────────────────────────────────── */
+function buildPayload(msg, overrides = {}) {
+  const isThread = msg.channel?.isThread?.() ?? false;
+  const parent = msg.channel?.parent ?? null;
+
+  return {
+    message_id: msg.id,
+    content: msg.content || "",
+    /* channel / thread location */
+    channel_id: isThread ? (parent?.id ?? msg.channelId) : msg.channelId,
+    channel_name: isThread ? (parent?.name ?? null) : (msg.channel?.name ?? null),
+    thread_id: isThread ? msg.channelId : null,
+    thread_name: isThread ? (msg.channel?.name ?? null) : null,
+    /* guild */
+    guild_id: msg.guild?.id ?? null,
+    guild_name: msg.guild?.name ?? null,
+    /* author */
+    discord_user_id: msg.author.id,
+    username: msg.author.username,
+    global_name: msg.author.globalName || msg.author.username,
+    avatar_url: msg.author.displayAvatarURL?.({ size: 256 }) ?? null,
+    /* meta */
+    platform: "discord",
+    athena_user_id: null,
+    discord_created_at: msg.createdAt?.toISOString() ?? null,
+    discord_created_ts: msg.createdTimestamp ?? null,
+    ...overrides,
+  };
+}
+
+/* ────────────────────────────────────────────
+   STORE A SINGLE LIVE MESSAGE
 ──────────────────────────────────────────── */
 export async function storeDiscordMessage(message) {
-  if (!message || !message.author) return;
+  if (!message?.author) return;
   if (message.author.bot) return;
 
   const payload = {
-    message_id: message.id,
-    content: message.content,
-    channel_id: message.channelId,
-    channel_name: message.channel?.name || null,
-    guild_id: message.guild?.id || null,
-    guild_name: message.guild?.name || null,
-    discord_user_id: message.author.id,
-    username: message.author.username,
-    global_name: message.author.globalName || message.author.username,
-    avatar_url: message.author.displayAvatarURL?.({ size: 256 }) ?? null,
-    platform: "discord",
-    athena_user_id: null,
-    discord_created_at: message.createdAt?.toISOString() || null,
-    discord_created_ts: message.createdTimestamp || null,
+    ...buildPayload(message),
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
   };
 
   const docRef = await firestore.collection("messages").add(payload);
 
-  getAthenaUserIdForDiscordId(message.author.id).then(athenaUserId => {
-    if (athenaUserId) {
-      docRef.update({ athena_user_id: athenaUserId }).catch(() => {});
-    } else {
-      getOrCreateAthenaUser(message.author).then(newId => {
-        docRef.update({ athena_user_id: newId }).catch(() => {});
-      }).catch(() => {});
-    }
-  }).catch(() => {});
+  /* resolve canonical athenaUserId in background */
+  getAthenaUserIdForDiscordId(message.author.id)
+    .then(athenaUserId => {
+      if (athenaUserId) {
+        docRef.update({ athena_user_id: athenaUserId }).catch(() => {});
+      } else {
+        getOrCreateAthenaUser(message.author)
+          .then(newId => docRef.update({ athena_user_id: newId }).catch(() => {}))
+          .catch(() => {});
+      }
+    })
+    .catch(() => {});
 }
 
 /* ────────────────────────────────────────────
-   STORE A BATCH OF HISTORICAL MESSAGES (backfill)
+   STORE A BATCH OF HISTORICAL MESSAGES
+   Deduplicates by message_id. Splits into Firestore-safe batches of 500.
 ──────────────────────────────────────────── */
-export async function storeMessageBatch(messages) {
-  if (!messages || messages.length === 0) return 0;
+export async function storeMessageBatch(messages, meta = {}) {
+  if (!messages?.length) return 0;
 
+  /* deduplicate against existing messages */
   const ids = messages.map(m => m.id);
   const existing = new Set();
-
   for (let i = 0; i < ids.length; i += 30) {
     const chunk = ids.slice(i, i + 30);
     const snap = await firestore.collection("messages")
-      .where("message_id", "in", chunk)
-      .get();
+      .where("message_id", "in", chunk).get();
     snap.docs.forEach(d => existing.add(d.data().message_id));
   }
 
-  const newMessages = messages.filter(m => !existing.has(m.id));
-  if (newMessages.length === 0) return 0;
+  const fresh = messages.filter(m => !existing.has(m.id));
+  if (!fresh.length) return 0;
 
-  const batch = firestore.batch();
-  for (const msg of newMessages) {
-    const ref = firestore.collection("messages").doc();
-    batch.set(ref, {
-      message_id: msg.id,
-      content: msg.content,
-      channel_id: msg.channelId,
-      channel_name: msg.channel?.name || null,
-      guild_id: msg.guild?.id || null,
-      guild_name: msg.guild?.name || null,
-      discord_user_id: msg.author.id,
-      username: msg.author.username,
-      global_name: msg.author.globalName || msg.author.username,
-      avatar_url: msg.author.displayAvatarURL?.({ size: 256 }) ?? null,
-      platform: "discord",
-      athena_user_id: null,
-      backfilled: true,
-      discord_created_at: msg.createdAt?.toISOString() || null,
-      discord_created_ts: msg.createdTimestamp || null,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
+  /* write in batches of 500 (Firestore limit) */
+  let stored = 0;
+  for (let i = 0; i < fresh.length; i += 500) {
+    const chunk = fresh.slice(i, i + 500);
+    const batch = firestore.batch();
+    for (const msg of chunk) {
+      const ref = firestore.collection("messages").doc();
+      batch.set(ref, {
+        ...buildPayload(msg, meta),
+        backfilled: true,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+    await batch.commit();
+    stored += chunk.length;
   }
-  await batch.commit();
-  return newMessages.length;
+
+  return stored;
 }
 
 /* ────────────────────────────────────────────
-   BACKFILL ALL DISCORD CHANNEL HISTORY
-   Fetches up to limitPerChannel messages per text channel.
+   FETCH ALL MESSAGES FROM A READABLE CHANNEL/THREAD
+──────────────────────────────────────────── */
+async function fetchAndStore(channel, { limitPerChannel, label }) {
+  let fetched = 0, stored = 0, before = null;
+
+  while (fetched < limitPerChannel) {
+    const size = Math.min(100, limitPerChannel - fetched);
+    const opts = { limit: size };
+    if (before) opts.before = before;
+
+    let batch;
+    try {
+      batch = await channel.messages.fetch(opts);
+    } catch (err) {
+      console.error(`[Backfill] Cannot read ${label}:`, err.message);
+      break;
+    }
+    if (!batch.size) break;
+
+    const msgs = [...batch.values()].filter(m => !m.author.bot && m.content?.trim());
+    const s = await storeMessageBatch(msgs);
+    stored += s;
+    fetched += batch.size;
+    before = batch.last()?.id;
+
+    await new Promise(r => setTimeout(r, 250));
+    if (batch.size < size) break;
+  }
+
+  if (fetched > 0) {
+    console.log(`[Backfill] ${label}: ${fetched} fetched, ${stored} new`);
+  }
+  return { fetched, stored };
+}
+
+/* ────────────────────────────────────────────
+   FETCH ALL THREADS FROM A CHANNEL (active + archived)
+──────────────────────────────────────────── */
+async function fetchAllThreads(channel) {
+  const threads = [];
+  try {
+    const active = await channel.threads.fetchActive();
+    threads.push(...active.threads.values());
+  } catch { /* channel may not support threads */ }
+
+  try {
+    let before = null;
+    while (true) {
+      const opts = { limit: 100, fetchAll: false };
+      if (before) opts.before = before;
+      const archived = await channel.threads.fetchArchived(opts);
+      threads.push(...archived.threads.values());
+      if (!archived.hasMore || archived.threads.size === 0) break;
+      before = archived.threads.last()?.id;
+      await new Promise(r => setTimeout(r, 300));
+    }
+  } catch { /* some channel types don't support archived */ }
+
+  return threads;
+}
+
+/* ────────────────────────────────────────────
+   BACKFILL ALL DISCORD HISTORY
+   Covers: text, announcement, voice, stage, forum, media + all threads
 ──────────────────────────────────────────── */
 export async function backfillDiscordHistory(guild, { limitPerChannel = 500 } = {}) {
-  console.log(`[Backfill] Starting history backfill for guild: ${guild.name}`);
+  console.log(`[Backfill] Starting full history backfill for: ${guild.name}`);
+  let totalStored = 0, totalSections = 0;
 
-  const textChannels = guild.channels.cache.filter(c =>
-    c.type === ChannelType.GuildText && c.viewable
-  );
+  for (const [, channel] of guild.channels.cache) {
+    if (!channel.viewable) continue;
 
-  let totalStored = 0;
-  let totalChannels = 0;
-
-  for (const [, channel] of textChannels) {
-    try {
-      let fetched = 0;
-      let before = null;
-
-      while (fetched < limitPerChannel) {
-        const fetchSize = Math.min(100, limitPerChannel - fetched);
-        const options = { limit: fetchSize };
-        if (before) options.before = before;
-
-        const batch = await channel.messages.fetch(options);
-        if (batch.size === 0) break;
-
-        const msgArray = [...batch.values()].filter(m => !m.author.bot);
-        const stored = await storeMessageBatch(msgArray);
+    /* ── Forum / Media: no direct messages — only threads ── */
+    if (THREAD_CONTAINER_TYPES.has(channel.type)) {
+      const threads = await fetchAllThreads(channel);
+      for (const thread of threads) {
+        const label = `#${channel.name}/${thread.name} (forum thread)`;
+        const { stored } = await fetchAndStore(thread, { limitPerChannel, label });
         totalStored += stored;
-        fetched += batch.size;
-        before = batch.last()?.id;
-
-        await new Promise(r => setTimeout(r, 300));
-        if (batch.size < fetchSize) break;
+        if (stored > 0) totalSections++;
       }
+      continue;
+    }
 
-      if (fetched > 0) {
-        console.log(`[Backfill] #${channel.name}: fetched ${fetched}, stored ${totalStored} total`);
-        totalChannels++;
+    /* ── Direct message channels ── */
+    if (DIRECT_MESSAGE_TYPES.has(channel.type) && !channel.isThread()) {
+      const label = `#${channel.name} (${ChannelType[channel.type]})`;
+      const { stored } = await fetchAndStore(channel, { limitPerChannel, label });
+      totalStored += stored;
+      if (stored > 0) totalSections++;
+
+      /* also fetch threads inside text/announcement channels */
+      if (THREAD_PARENT_TYPES.has(channel.type)) {
+        const threads = await fetchAllThreads(channel);
+        for (const thread of threads) {
+          const tLabel = `#${channel.name}/${thread.name} (thread)`;
+          const { stored: ts } = await fetchAndStore(thread, { limitPerChannel, label: tLabel });
+          totalStored += ts;
+          if (ts > 0) totalSections++;
+        }
       }
-    } catch (err) {
-      console.error(`[Backfill] Error in #${channel.name}:`, err.message);
     }
   }
 
-  console.log(`[Backfill] Complete. ${totalStored} new messages across ${totalChannels} channels.`);
-  return { totalStored, totalChannels };
+  console.log(`[Backfill] Done. ${totalStored} new messages across ${totalSections} sections.`);
+  return { totalStored, totalSections };
 }
 
 /* ────────────────────────────────────────────
-   GET RECENT CHANNEL CONTEXT (live, Discord API)
-   Used for the last ~30 messages from current channel.
+   GET RECENT CHANNEL CONTEXT (live Discord API)
+   Used for the most recent messages in the active channel.
 ──────────────────────────────────────────── */
 export async function getRecentChannelContext(channel, limit = 30) {
   try {
     const messages = await channel.messages.fetch({ limit });
-    if (messages.size === 0) return "";
+    if (!messages.size) return "";
+
+    const isThread = channel.isThread?.() ?? false;
+    const parentName = isThread ? (channel.parent?.name ?? null) : null;
+    const locationLabel = parentName ? `#${parentName}/${channel.name}` : `#${channel.name}`;
 
     const lines = [...messages.values()]
       .filter(m => !m.author.bot || m.author.username.toLowerCase().includes("athena"))
@@ -158,8 +262,8 @@ export async function getRecentChannelContext(channel, limit = 30) {
         return `[${time}] ${m.author.globalName || m.author.username}: ${m.content}`;
       });
 
-    if (lines.length === 0) return "";
-    return `[RECENT ACTIVITY — #${channel.name}]\n${lines.join("\n")}\n[END RECENT ACTIVITY]\n\n`;
+    if (!lines.length) return "";
+    return `[RECENT ACTIVITY — ${locationLabel}]\n${lines.join("\n")}\n[END RECENT ACTIVITY]\n\n`;
   } catch {
     return "";
   }
@@ -167,11 +271,11 @@ export async function getRecentChannelContext(channel, limit = 30) {
 
 /* ────────────────────────────────────────────
    BUILD SERVER CONTEXT FROM FIREBASE
-   Queries stored messages for a given channel + time range.
-   This is the core of Athena's historical awareness.
+   Full historical query with channel + thread + author attribution.
 ──────────────────────────────────────────── */
 export async function buildServerContext({
   channelName = null,
+  threadName = null,
   guildId = null,
   daysBack = 7,
   limit = 200,
@@ -179,34 +283,36 @@ export async function buildServerContext({
   try {
     const cutoffTs = Date.now() - daysBack * 24 * 60 * 60 * 1000;
 
-    /* Query by channel_name if provided, else by guild_id */
     let query = firestore.collection("messages")
       .where("platform", "==", "discord");
 
-    if (channelName) {
+    if (threadName) {
+      /* specific thread requested */
+      query = query.where("thread_name", "==", threadName);
+    } else if (channelName) {
+      /* could be a channel name or a forum/parent name */
       query = query.where("channel_name", "==", channelName);
     } else if (guildId) {
       query = query.where("guild_id", "==", guildId);
     }
 
-    /* Fetch more than limit so we can filter by date in memory */
-    query = query.limit(limit * 4);
+    const snap = await query.limit(limit * 5).get();
 
-    const snap = await query.get();
     if (snap.empty) {
-      console.log(`[ServerContext] No messages found for channel="${channelName}" guild="${guildId}"`);
+      /* try matching as parent_channel_name (forum scenario) */
+      if (channelName) {
+        return buildServerContext({ threadName: channelName, guildId, daysBack, limit });
+      }
+      console.log(`[ServerContext] No messages found for channel="${channelName}" thread="${threadName}"`);
       return "";
     }
 
-    /* Filter by date range and sort chronologically */
     const filtered = snap.docs
       .map(d => d.data())
       .filter(d => {
-        if (!d.discord_created_ts && !d.discord_created_at) return false;
-        const ts = d.discord_created_ts || new Date(d.discord_created_at).getTime();
-        return ts >= cutoffTs;
+        const ts = d.discord_created_ts || (d.discord_created_at ? new Date(d.discord_created_at).getTime() : null);
+        return ts && ts >= cutoffTs && d.content?.trim();
       })
-      .filter(d => d.content && d.content.trim().length > 0)
       .sort((a, b) => {
         const tsA = a.discord_created_ts || new Date(a.discord_created_at).getTime();
         const tsB = b.discord_created_ts || new Date(b.discord_created_at).getTime();
@@ -214,8 +320,8 @@ export async function buildServerContext({
       })
       .slice(-limit);
 
-    if (filtered.length === 0) {
-      console.log(`[ServerContext] Messages found but none within last ${daysBack} days for channel="${channelName}"`);
+    if (!filtered.length) {
+      console.log(`[ServerContext] No messages within last ${daysBack} days for "${channelName || threadName}"`);
       return "";
     }
 
@@ -223,19 +329,27 @@ export async function buildServerContext({
       const ts = d.discord_created_ts
         ? new Date(d.discord_created_ts)
         : new Date(d.discord_created_at);
-      const time = ts.toLocaleString("en-US", {
-        month: "short", day: "numeric",
-        hour: "2-digit", minute: "2-digit",
-        timeZone: "UTC", hour12: true
+      const when = ts.toLocaleString("en-US", {
+        weekday: "short", month: "short", day: "numeric",
+        hour: "2-digit", minute: "2-digit", timeZone: "UTC", hour12: true
       });
       const author = d.global_name || d.username || "Unknown";
-      return `[${time}] ${author}: ${d.content}`;
+      /* show full location: channel/thread or just channel */
+      const loc = d.thread_name
+        ? `#${d.channel_name}/${d.thread_name}`
+        : `#${d.channel_name || "unknown"}`;
+      return `[${when}] [${loc}] ${author}: ${d.content}`;
     });
 
-    const scope = channelName ? `#${channelName}` : "server-wide";
-    console.log(`[ServerContext] Built context: ${filtered.length} messages from ${scope} (last ${daysBack} days)`);
+    const scope = threadName
+      ? `#${channelName || ""}/${threadName}`
+      : channelName
+        ? `#${channelName}`
+        : "all channels";
+
+    console.log(`[ServerContext] ${filtered.length} messages from ${scope} (last ${daysBack} days)`);
     return (
-      `[SERVER HISTORY — ${scope}, last ${daysBack} day(s)]\n` +
+      `[SERVER HISTORY — ${scope}, last ${daysBack} day(s) | ${filtered.length} messages]\n` +
       lines.join("\n") +
       `\n[END SERVER HISTORY]\n\n`
     );
@@ -246,33 +360,41 @@ export async function buildServerContext({
 }
 
 /* ────────────────────────────────────────────
-   LIST KNOWN CHANNEL NAMES IN FIREBASE
-   Lets us fuzzy-match a user's channel reference.
+   LIST KNOWN CHANNELS + THREADS IN FIREBASE
+   Used for fuzzy-matching user channel references.
 ──────────────────────────────────────────── */
 export async function getKnownChannels(guildId) {
   try {
     const snap = await firestore.collection("messages")
       .where("guild_id", "==", guildId)
       .where("platform", "==", "discord")
-      .limit(500)
+      .limit(1000)
       .get();
+
     const channels = new Set();
+    const threads = new Set();
+
     snap.docs.forEach(d => {
-      const name = d.data().channel_name;
-      if (name) channels.add(name);
+      const data = d.data();
+      if (data.channel_name) channels.add(data.channel_name);
+      if (data.thread_name)  threads.add(data.thread_name);
     });
-    return [...channels];
+
+    return {
+      channels: [...channels],
+      threads: [...threads],
+      all: [...channels, ...threads],
+    };
   } catch {
-    return [];
+    return { channels: [], threads: [], all: [] };
   }
 }
 
 /* ────────────────────────────────────────────
-   BACKFILL EXISTING FIRESTORE MESSAGES
-   Resolves athena_user_id for messages stored with only discord_user_id.
+   RESOLVE ATHENA USER IDs FOR EXISTING MESSAGES
 ──────────────────────────────────────────── */
 export async function backfillExistingMessages() {
-  console.log("[Backfill] Resolving athena_user_id for existing messages...");
+  console.log("[Backfill] Resolving athena_user_id for stored messages...");
   const batchSize = 200;
   let lastDoc = null;
   let updated = 0;
