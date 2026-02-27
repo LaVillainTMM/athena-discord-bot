@@ -7,6 +7,7 @@ import {
   updateUserNation,
   recordActivity,
   mergeDiscordAccounts,
+  forceCreateAndLinkDiscordIds,
 } from "./athenaUser.js";
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
@@ -379,6 +380,55 @@ async function getAthenaResponse(content, athenaUserId, discordUserId, channel, 
 }
 
 /* ────────────────────────────────────────────
+   ADMIN COMMAND: !forcelink
+   Usage: !forcelink <primaryId> <altId1> [altId2 ...]
+   Links raw Discord IDs into one unified profile.
+   Works even if accounts have never messaged Athena.
+   First ID is the canonical (primary) identity.
+──────────────────────────────────────────── */
+async function handleForceLinkById(message) {
+  const isAdmin = ADMIN_IDS.includes(message.author.id) ||
+    message.member?.permissions?.has("Administrator");
+
+  if (!isAdmin) {
+    await message.reply("You do not have permission to use this command.");
+    return;
+  }
+
+  const parts = message.content.trim().split(/\s+/);
+  parts.shift();
+  const ids = parts.filter(p => /^\d{17,20}$/.test(p));
+
+  if (ids.length < 2) {
+    await message.reply(
+      "Usage: `!forcelink <primaryId> <altId1> [altId2 ...]`\n" +
+      "Provide raw Discord user IDs. The first ID becomes the canonical profile.\n" +
+      "Example: `!forcelink 345972021563359244 1447799371440722052 135516968026505216`"
+    );
+    return;
+  }
+
+  await message.reply(`Unifying profile for ${ids.length} Discord account(s)...`);
+
+  try {
+    const result = await forceCreateAndLinkDiscordIds(ids, client);
+    const lines = result.results.map(r => {
+      if (r.status === "linked") return `• \`${r.id}\` — linked`;
+      if (r.status === "already_linked") return `• \`${r.id}\` — already linked`;
+      return `• \`${r.id}\` — failed: ${r.error}`;
+    });
+
+    await message.reply(
+      `**Profile unified** (Athena ID: \`${result.primaryAthenaUserId}\`)\n` +
+      `Primary: \`${result.primaryDiscordId}\`\n` +
+      lines.join("\n")
+    );
+  } catch (err) {
+    await message.reply(`Force link failed: ${err.message}`);
+  }
+}
+
+/* ────────────────────────────────────────────
    ADMIN COMMAND: !linkaccounts
    Usage: !linkaccounts @primary @secondary [@third ...]
    Links all mentioned accounts to the primary account's profile.
@@ -432,6 +482,10 @@ client.on(Events.MessageCreate, async message => {
   storeDiscordMessage(message).catch(() => {});
 
   /* admin commands */
+  if (message.content.startsWith("!forcelink")) {
+    await handleForceLinkById(message);
+    return;
+  }
   if (message.content.startsWith("!linkaccounts")) {
     await handleLinkAccounts(message);
     return;
