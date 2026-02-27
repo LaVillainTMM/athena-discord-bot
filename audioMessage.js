@@ -132,18 +132,19 @@ export async function sendAudioMessage(channel, text, label = "athena_voice") {
 
   try {
     if (ELEVENLABS_API_KEY) {
-      console.log("[AudioMessage] Using ElevenLabs TTS");
+      /* Key is present — use ElevenLabs ONLY. Never fall back to gtts when a key
+         is configured, so the caller always gets either Lily or a clear error. */
+      console.log("[AudioMessage] Using ElevenLabs (Lily)");
       try {
         await generateWithElevenLabs(audioText, filepath);
       } catch (elevenErr) {
-        /* ElevenLabs failed — log the specific error and fall back to gtts */
-        lastError = elevenErr.message;
-        console.error("[AudioMessage] ElevenLabs failed:", elevenErr.message, "— falling back to gtts");
-        await generateWithGtts(audioText, filepath);
-        lastError = null; /* gtts succeeded — clear the error */
+        console.error("[AudioMessage] ElevenLabs failed:", elevenErr.message);
+        cleanup(filepath);
+        return { ok: false, error: `ElevenLabs error — ${elevenErr.message.substring(0, 200)}` };
       }
     } else {
-      console.warn("[AudioMessage] ELEVENLABS_API_KEY not set — using gtts");
+      /* No key configured — use Google TTS as a best-effort fallback */
+      console.warn("[AudioMessage] ELEVENLABS_API_KEY not set — using Google TTS (not Lily)");
       await generateWithGtts(audioText, filepath);
     }
 
