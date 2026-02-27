@@ -259,7 +259,12 @@ export async function getRecentChannelContext(channel, limit = 30) {
         const time = m.createdAt.toLocaleTimeString("en-US", {
           hour: "2-digit", minute: "2-digit", timeZone: "UTC", hour12: true
         });
-        return `[${time}] ${m.author.globalName || m.author.username}: ${m.content}`;
+        const reactionStr = m.reactions?.cache?.size
+          ? " [reactions: " + [...m.reactions.cache.values()]
+              .map(r => `${r.emoji.name}×${r.count}`)
+              .join(", ") + "]"
+          : "";
+        return `[${time}] ${m.author.globalName || m.author.username}: ${m.content}${reactionStr}`;
       });
 
     if (!lines.length) return "";
