@@ -286,7 +286,7 @@ function pcmToMp3(pcmBuffer, outputPath) {
 }
 
 /* Store a voice log entry + update voice fingerprint in Firebase */
-async function storeVoiceLog(userId, user, guild, { durationMs, transcript, sampleSizeBytes }) {
+async function storeVoiceLog(userId, user, guild, { durationMs, transcript, sampleSizeBytes, sessionId }) {
   try {
     const fingerprintRef = firestore
       .collection("voice_fingerprints")
@@ -302,6 +302,7 @@ async function storeVoiceLog(userId, user, guild, { durationMs, transcript, samp
       durationMs,
       sampleSizeBytes,
       transcript: transcript || null,
+      sessionId: sessionId || null,
     };
 
     /* Add this sample to the audio_logs subcollection */
@@ -332,7 +333,7 @@ async function storeVoiceLog(userId, user, guild, { durationMs, transcript, samp
 }
 
 /* Process a captured Opus audio chunk array for one user utterance */
-async function processVoiceSample(userId, user, guild, opusChunks, durationMs) {
+async function processVoiceSample(userId, user, guild, opusChunks, durationMs, sessionId) {
   if (opusChunks.length === 0) return;
 
   const ts = Date.now();
@@ -361,11 +362,12 @@ async function processVoiceSample(userId, user, guild, opusChunks, durationMs) {
     /* Transcribe */
     const transcript = await transcribeWithWhisper(mp3Path);
 
-    /* Store in Firebase */
+    /* Store in Firebase — include sessionId so fingerprints link to the session */
     await storeVoiceLog(userId, user, guild, {
       durationMs,
       transcript,
       sampleSizeBytes: pcmBuffer.length,
+      sessionId: sessionId || null,
     });
   } catch (err) {
     console.error(`[VoiceListen] processVoiceSample error for ${user.username}:`, err.message);
@@ -380,9 +382,9 @@ async function processVoiceSample(userId, user, guild, opusChunks, durationMs) {
    users, capture their audio, transcribe it, and store
    voice logs + fingerprints in Firebase.
 ────────────────────────────────────────────────────── */
-export function startListeningInChannel(connection, guild, discordClient) {
+export function startListeningInChannel(connection, guild, discordClient, sessionId = null) {
   const { receiver } = connection;
-  console.log(`[VoiceListen] Listening for voices in ${guild.name}`);
+  console.log(`[VoiceListen] Listening for voices in ${guild.name}${sessionId ? ` (session ${sessionId})` : ""}`);
 
   receiver.speaking.on("start", async (userId) => {
     const key = `${guild.id}_${userId}`;
@@ -411,7 +413,7 @@ export function startListeningInChannel(connection, guild, discordClient) {
         /* Ignore very short clips — noise/blips */
         if (durationMs < 300 || opusChunks.length < 3) return;
 
-        processVoiceSample(userId, user, guild, opusChunks, durationMs).catch((err) =>
+        processVoiceSample(userId, user, guild, opusChunks, durationMs, sessionId).catch((err) =>
           console.error("[VoiceListen] Async processVoiceSample error:", err.message)
         );
       });
