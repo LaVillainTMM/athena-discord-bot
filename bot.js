@@ -33,6 +33,7 @@ import {
 } from "./athenaDiscord.js";
 import { joinChannel, leaveChannel, isInVoice, getVoiceChannelId, speak, startListeningInChannel } from "./voice.js";
 import { sendAudioMessage, isAudioRequest, splitResponseForAudio } from "./audioMessage.js";
+import { syncLatestDojPressReleases, searchAndStoreDoj, getDojKnowledgeSummary } from "./lib/dojKnowledge.js";
 import { storeMemberVisualProfile, identifyMembersInImage } from "./visualIdentity.js";
 
 if (!process.env.DISCORD_TOKEN) throw new Error("DISCORD_TOKEN missing");
@@ -65,6 +66,21 @@ REAL-TIME AWARENESS:
 - You always receive the current date and time at the start of every message in a [LIVE CONTEXT] block.
 - Answer any questions about the current date, time, or day of week directly from [LIVE CONTEXT].
 - Never say you do not have access to real-time information. You do.
+- You have Google Search grounding — you actively search the web for current events, recent news, local incidents, and anything that requires up-to-date information. Use it freely and naturally.
+
+RESEARCH MINDSET:
+- When asked about anything recent, local, or time-sensitive (news, incidents, events, conditions, developments), search for it and answer from what you find. Never respond with "I don't have information about that" without having searched first.
+- FORBIDDEN PHRASES — never say any of these: "my knowledge base," "my training data," "my current knowledge," "I cannot access current information," "as of my knowledge cutoff," "I don't have access to real-time." You have real-time access. Use it.
+- When you find information through search, present it naturally and confidently as your knowledge.
+- For things that genuinely cannot be found anywhere (truly private, unpublished, or nonexistent information), you may say "I wasn't able to find anything on that" — but this should be rare, not a first response.
+- Cross-reference sources when possible. If sources conflict, acknowledge the discrepancy and present the most credible account.
+
+DOJ & GOVERNMENT RECORDS:
+- You have comprehensive knowledge of all publicly available Department of Justice (justice.gov) files, press releases, case documents, and reports. They are indexed and continuously updated through automated syncing.
+- For any document containing redacted content ([REDACTED], ████, blacked-out sections), you actively research every verifiable source — news archives, FOIA databases, court records, Congressional testimony, investigative journalism (ProPublica, AP, Reuters, Washington Post, NYT) — to determine what was removed.
+- You know not just WHAT was redacted but WHY: national security classification, ongoing grand jury secrecy (Rule 6(e)), personal identifying information protection (Exemption 6), law enforcement technique protection (Exemption 7(e)), deliberative process privilege, attorney-client privilege, or other specific FOIA exemptions.
+- When asked about any DOJ case, ruling, press release, or document, answer with authority from your indexed records combined with live search results.
+- Never say you cannot access DOJ documents. You can, and you do.
 
 SERVER AWARENESS:
 - You receive a [RECENT SERVER ACTIVITY] block containing the latest messages from the Discord channel.
@@ -78,11 +94,11 @@ INDIVIDUAL RECOGNITION:
 - Remember context from past conversations to give personalized, meaningful responses.
 
 CRITICAL TRUTHFULNESS RULES:
-- NEVER make up facts or statistics. If you do not know something, say so honestly.
-- NEVER agree with false claims to be agreeable. Politely correct misinformation.
-- You would rather say "I don't know" than give a wrong answer.
+- NEVER fabricate facts, statistics, quotes, or case details. If something cannot be verified through search or your training, say so.
+- NEVER agree with false claims to be agreeable. Politely correct misinformation with the correct information.
+- Search before you doubt. Before saying you do not know something, attempt to find it. "I don't know" is a last resort, not a first response.
 - You HAVE extensive training knowledge covering books, literature, philosophy, history, science, and all domains of human understanding. Draw on this freely. You know the content of well-known works such as "The 48 Laws of Power", "The Art of War", "The Prince", "Meditations", "The Iliad", "The Odyssey", classical literature, philosophy texts, and countless other published works. When asked to quote, recite, or summarize from these works, do so confidently from your training — do not claim you lack the text or need it provided to you.
-- "I don't know" applies only to obscure, unpublished, or genuinely unknown information — not to famous books, well-documented history, or widely-known cultural knowledge that is part of your training.
+- For current events, news, recent incidents, or anything time-sensitive — search Google and answer from real results. This is your primary tool for anything recent.
 
 EMOJI & REACTION INTELLIGENCE:
 - You fully understand emojis — their literal meaning, emotional tone, cultural context, and how they are being used.
@@ -158,12 +174,30 @@ const MODEL_CANDIDATES = [
 let activeModel = null;
 let activeModelName = null;
 
+/* Models that support Google Search grounding (real-time web search) */
+const SEARCH_GROUNDING_MODELS = new Set([
+  "gemini-2.5-flash",
+  "gemini-2.5-pro",
+  "gemini-2.0-flash-001",
+  "gemini-2.0-flash",
+  "gemini-1.5-flash",
+  "gemini-1.5-pro",
+]);
+
 async function getWorkingModel() {
   if (activeModel) return activeModel;
   for (const name of MODEL_CANDIDATES) {
     try {
       console.log(`[Gemini] Trying model: ${name}...`);
-      const candidate = genAI.getGenerativeModel({ model: name, systemInstruction: ATHENA_SYSTEM_PROMPT });
+
+      /* Enable Google Search grounding for supported models */
+      const config = { model: name, systemInstruction: ATHENA_SYSTEM_PROMPT };
+      if (SEARCH_GROUNDING_MODELS.has(name)) {
+        config.tools = [{ googleSearch: {} }];
+        console.log(`[Gemini] Google Search grounding enabled for ${name}`);
+      }
+
+      const candidate = genAI.getGenerativeModel(config);
       const test = await candidate.generateContent("Say hello in one word.");
       test.response.text();
       activeModel = candidate;
@@ -868,6 +902,69 @@ client.on(Events.MessageCreate, async message => {
     return;
   }
 
+  /* ── !doj — DOJ knowledge management ── */
+  if (message.content.startsWith("!doj")) {
+    if (!ADMIN_IDS.includes(message.author.id)) {
+      await message.reply("This command is restricted to administrators.");
+      return;
+    }
+    const dojArgs = message.content.replace("!doj", "").trim();
+
+    if (!dojArgs || dojArgs === "sync") {
+      await message.reply("Syncing latest DOJ press releases...");
+      try {
+        const count = await syncLatestDojPressReleases(25);
+        const summary = await getDojKnowledgeSummary();
+        const cats = Object.entries(summary.categories)
+          .map(([k, v]) => `${k}: ${v}`).join(", ");
+        await message.reply(
+          `DOJ sync complete — ${count} new entries stored.\n` +
+          `Total DOJ knowledge: ${summary.total} entries\n` +
+          `Categories: ${cats || "none yet"}`
+        );
+      } catch (err) {
+        await message.reply(`DOJ sync failed: ${err.message}`);
+      }
+      return;
+    }
+
+    if (dojArgs.startsWith("search ")) {
+      const query = dojArgs.replace("search ", "").trim();
+      if (!query) { await message.reply("Usage: `!doj search <query>`"); return; }
+      await message.reply(`Searching DOJ.gov for: "${query}"...`);
+      try {
+        const { stored, results } = await searchAndStoreDoj(query);
+        const preview = results.slice(0, 5).map((r, i) => `${i + 1}. ${r.title}`).join("\n");
+        await message.reply(
+          `Search complete — ${stored} new entries stored.\n\nFound:\n${preview || "No results"}`
+        );
+      } catch (err) {
+        await message.reply(`DOJ search failed: ${err.message}`);
+      }
+      return;
+    }
+
+    if (dojArgs === "status") {
+      try {
+        const summary = await getDojKnowledgeSummary();
+        const cats = Object.entries(summary.categories)
+          .map(([k, v]) => `  • ${k}: ${v}`).join("\n");
+        await message.reply(`**DOJ Knowledge Status**\nTotal entries: ${summary.total}\n${cats || "  No entries yet"}`);
+      } catch (err) {
+        await message.reply(`Error: ${err.message}`);
+      }
+      return;
+    }
+
+    await message.reply(
+      "**!doj commands:**\n" +
+      "`!doj sync` — fetch latest DOJ press releases\n" +
+      "`!doj search <query>` — search DOJ.gov and store results\n" +
+      "`!doj status` — show DOJ knowledge summary"
+    );
+    return;
+  }
+
   const isDM = message.channel.type === ChannelType.DM;
   const mentionsAthena = message.content.toLowerCase().includes("athena");
   if (!isDM && !mentionsAthena) return;
@@ -1247,6 +1344,20 @@ client.once(Events.ClientReady, async () => {
       .then(({ totalStored }) => console.log(`[Backfill] ${guild.name}: ${totalStored} historical messages stored`))
       .catch(err => console.error(`[Backfill] Error for ${guild.name}:`, err.message));
   }
+
+  /* 5.5. DOJ press release sync (non-blocking — runs in background after 30s) */
+  setTimeout(() => {
+    syncLatestDojPressReleases(25)
+      .then(count => console.log(`[DOJ] Startup sync complete — ${count} new entries stored`))
+      .catch(err => console.error("[DOJ] Startup sync failed:", err.message));
+  }, 30000);
+
+  /* Daily DOJ re-sync — runs every 24 hours */
+  setInterval(() => {
+    syncLatestDojPressReleases(25)
+      .then(count => console.log(`[DOJ] Daily sync — ${count} new entries stored`))
+      .catch(err => console.error("[DOJ] Daily sync failed:", err.message));
+  }, 24 * 60 * 60 * 1000);
 
   /* 6. Resume tracking for anyone already in voice channels when bot starts.
         This handles the case where the bot restarts while a call is ongoing — the
