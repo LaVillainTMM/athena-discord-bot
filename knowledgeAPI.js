@@ -69,7 +69,7 @@ export const knowledgeAPI = {
 
 /**
  * Start the autonomous learning loop.
- * Fetches a new fact every 4 minutes and stores it.
+ * Fetches a new fact every 60 seconds and stores it.
  */
 export function startKnowledgeLearning() {
   console.log("[KnowledgeAPI] Starting autonomous learning...");
