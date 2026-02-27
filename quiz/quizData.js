@@ -10432,6 +10432,9 @@ export const quizQuestions = [
   }
 ];
 
+export const MANDATORY_COUNT = 20;
+export const RANDOM_COUNT = 30;
+
 export function selectRandomQuizQuestions(count = QUIZ_SESSION_SIZE) {
   const shuffled = [...quizQuestions];
   for (let i = shuffled.length - 1; i > 0; i--) {
@@ -10439,4 +10442,16 @@ export function selectRandomQuizQuestions(count = QUIZ_SESSION_SIZE) {
     [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
   }
   return shuffled.slice(0, Math.min(count, shuffled.length));
+}
+
+export function selectQuizSession() {
+  const mandatory = quizQuestions.slice(0, MANDATORY_COUNT);
+  const pool = quizQuestions.slice(MANDATORY_COUNT);
+  const shuffled = [...pool];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  const random = shuffled.slice(0, RANDOM_COUNT);
+  return [...mandatory, ...random];
 }
