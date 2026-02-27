@@ -681,6 +681,7 @@ client.on(Events.MessageCreate, async message => {
          Generate MP3(s) from the reply. Fall back to text only if audio fails entirely. */
       const audioParts = splitResponseForAudio(reply, 5000);
       let audioSent = false;
+      let lastAudioError = null;
 
       for (let i = 0; i < audioParts.length; i++) {
         const label = audioParts.length > 1
@@ -691,25 +692,31 @@ client.on(Events.MessageCreate, async message => {
         if (i > 0) await new Promise(r => setTimeout(r, 3000));
 
         try {
-          const ok = await sendAudioMessage(target, audioParts[i], label);
-          if (ok) {
+          const result = await sendAudioMessage(target, audioParts[i], label);
+          if (result.ok) {
             audioSent = true;
           } else if (i === 0) {
-            console.error("[AudioMessage] sendAudioMessage returned false for part 1");
+            console.error("[AudioMessage] Part 1 failed:", result.error);
+            lastAudioError = result.error || "Unknown error";
             break;
           }
         } catch (err) {
           console.error("[AudioMessage] Send error part", i + 1, ":", err.message);
-          if (i === 0) break;
+          if (i === 0) { lastAudioError = err.message; break; }
         }
       }
 
       /* Only fall back to text if audio completely failed */
       if (!audioSent) {
         const hasKey = !!process.env.ELEVENLABS_API_KEY;
-        const errorNote = hasKey
-          ? "_[Audio generation failed — ElevenLabs returned an error. Here is the text instead:]_\n\n"
-          : "_[Audio unavailable — ELEVENLABS_API_KEY is not set in Railway. Here is the text instead:]_\n\n";
+        let errorNote;
+        if (!hasKey) {
+          errorNote = "_[Audio unavailable — ELEVENLABS_API_KEY is not set in Railway. Here is the text instead:]_\n\n";
+        } else if (lastAudioError) {
+          errorNote = `_[Audio failed — ${lastAudioError.substring(0, 120)}. Here is the text instead:]_\n\n`;
+        } else {
+          errorNote = "_[Audio generation failed. Here is the text instead:]_\n\n";
+        }
         const fullText = errorNote + reply;
         const chunks = fullText.match(/[\s\S]{1,1990}/g) || [fullText];
         for (const chunk of chunks) await message.reply(chunk);
