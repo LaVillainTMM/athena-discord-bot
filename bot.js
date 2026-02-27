@@ -17,6 +17,8 @@ import {
   finalizeVoiceSession,
   buildAllStyleProfiles,
   buildStyleProfileFromHistory,
+  getRecentVoiceSessions,
+  formatVoiceSessionsForContext,
 } from "./voiceRecognition.js";
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
@@ -271,6 +273,34 @@ function parseHistoryRequest(content, knownChannelData = {}) {
   return { isHistoryRequest: true, isActivityRequest, channelName, threadName, daysBack };
 }
 
+/* ──────────────────────────────────────────────────────
+   PARSE VOICE SESSION REQUEST
+   Detects when someone is asking about voice calls or
+   what happened in a voice channel / who was in a call.
+────────────────────────────────────────────────────── */
+function parseVoiceSessionRequest(content) {
+  const lower = content.toLowerCase();
+  const voiceKeywords = [
+    "voice call", "voice channel", "vc", "in the vc",
+    "who was in", "who was on", "who joined", "who was there",
+    "last call", "recent call", "the call", "a call",
+    "voice session", "voice history",
+    "what happened in vc", "what was said in vc",
+    "what did people say in vc", "who spoke",
+    "audio call", "voice chat",
+    "what was discussed in", "who talked",
+    "who was listening", "who was talking",
+  ];
+  const isVoiceQuery = voiceKeywords.some(kw => lower.includes(kw));
+  if (!isVoiceQuery) return null;
+
+  let limit = 5;
+  if (lower.includes("all") || lower.includes("recent")) limit = 10;
+  if (lower.includes("last call") || lower.includes("most recent")) limit = 1;
+
+  return { isVoiceQuery: true, limit };
+}
+
 /* ---------------- DISCORD CLIENT ---------------- */
 const client = new Client({
   intents: [
@@ -376,7 +406,8 @@ async function getAthenaResponse(content, athenaUserId, discordUserId, channel, 
   if (effectiveGuildId) {
     knownChannelData = await getKnownChannels(effectiveGuildId).catch(() => ({ channels: [], threads: [], all: [] }));
   }
-  const historyRequest = parseHistoryRequest(content, knownChannelData);
+  const historyRequest     = parseHistoryRequest(content, knownChannelData);
+  const voiceSessionRequest = parseVoiceSessionRequest(content);
 
   const [knowledge, history] = await Promise.allSettled([
     getKnowledgeBase(),
@@ -387,11 +418,21 @@ async function getAthenaResponse(content, athenaUserId, discordUserId, channel, 
   const historyEntries   = history.status === "fulfilled"   ? history.value   : [];
 
   /* build server context:
+     - voice session request → getRecentVoiceSessions (call history + participants + transcripts)
      - activity request → getActivityPeaks (counts + peak period messages)
      - history request  → buildServerContext (messages from channel/time range)
      - normal message   → getRecentChannelContext (live last 30 msgs) */
   let serverContext = "";
-  if (historyRequest?.isActivityRequest) {
+  if (voiceSessionRequest && effectiveGuildId) {
+    console.log(`[Athena] Voice session history request — limit=${voiceSessionRequest.limit}`);
+    const sessions = await getRecentVoiceSessions(effectiveGuildId, voiceSessionRequest.limit).catch(() => []);
+    serverContext = formatVoiceSessionsForContext(sessions);
+    /* also include recent channel context so Athena has both */
+    if (channel) {
+      const recentChat = await getRecentChannelContext(channel, 20).catch(() => "");
+      if (recentChat) serverContext = serverContext + recentChat;
+    }
+  } else if (historyRequest?.isActivityRequest) {
     console.log(`[Athena] Activity analysis request — days=${historyRequest.daysBack}`);
     serverContext = await getActivityPeaks({
       guildId: effectiveGuildId,
@@ -666,7 +707,8 @@ client.on(Events.MessageCreate, async message => {
       if (wantsVoiceJoin && userVoiceChannel) {
         try {
           const state = await joinChannel(message.guild, userVoiceChannel);
-          startListeningInChannel(state.connection, message.guild, client);
+          const joinSessionId = activeSessions.get(userVoiceChannel.id)?.sessionId ?? null;
+          startListeningInChannel(state.connection, message.guild, client, joinSessionId);
           speak(message.guild, userVoiceChannel, reply).catch(() => {});
           return;
         } catch (joinErr) {
@@ -778,7 +820,8 @@ async function handleVoiceCommand(message) {
   if (cmd.startsWith("!join")) {
     try {
       const state = await joinChannel(message.guild, voiceChannel);
-      startListeningInChannel(state.connection, message.guild, client);
+      const cmdSessionId = activeSessions.get(voiceChannel.id)?.sessionId ?? null;
+      startListeningInChannel(state.connection, message.guild, client, cmdSessionId);
       await message.reply(`Joined **${voiceChannel.name}**. I'll speak my responses aloud while I'm here.`);
     } catch (err) {
       await message.reply(`Could not join: ${err.message}`);
@@ -857,13 +900,20 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   /* ── USER LEFT a channel ── */
   if (leftChannelId && leftChannelId !== joinedChannelId) {
     const session = activeSessions.get(leftChannelId);
-    if (session && session.participants.has(user.id)) {
-      const p = session.participants.get(user.id);
+    if (session) {
+      /* Remove this user from our in-memory tracking */
       session.participants.delete(user.id);
 
-      /* If the channel is now empty, close out the session */
-      if (session.participants.size === 0) {
+      /* Check ACTUAL Discord channel for remaining non-bot humans
+         (catches people who joined before Athena started tracking) */
+      const leftChannel = oldState.channel;
+      const humansRemaining = leftChannel
+        ? [...leftChannel.members.values()].filter(m => !m.user.bot).length
+        : session.participants.size;
+
+      if (humansRemaining === 0) {
         activeSessions.delete(leftChannelId);
+        console.log(`[VoiceTracking] Channel empty — finalizing session ${session.sessionId}`);
         finalizeVoiceSession(session).catch(err =>
           console.error("[VoiceTracking] Finalize error:", err.message)
         );
