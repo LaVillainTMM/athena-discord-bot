@@ -119,20 +119,31 @@ function cleanup(filepath) {
    Returns:
      true on success, false on failure
 ────────────────────────────────────────────────────── */
+/* ── Returns { ok: true } on success, { ok: false, error: string } on failure ── */
 export async function sendAudioMessage(channel, text, label = "athena_voice") {
   const audioText = text.substring(0, 5000).trim();
-  if (!audioText) return false;
+  if (!audioText) return { ok: false, error: "Empty text" };
 
   const safeName =
     label.replace(/[^a-zA-Z0-9_\- ]/g, "").trim().replace(/\s+/g, "_") || "athena_voice";
   const filepath = `/tmp/${safeName}_${Date.now()}.mp3`;
 
+  let lastError = null;
+
   try {
     if (ELEVENLABS_API_KEY) {
       console.log("[AudioMessage] Using ElevenLabs TTS");
-      await generateWithElevenLabs(audioText, filepath);
+      try {
+        await generateWithElevenLabs(audioText, filepath);
+      } catch (elevenErr) {
+        /* ElevenLabs failed — log the specific error and fall back to gtts */
+        lastError = elevenErr.message;
+        console.error("[AudioMessage] ElevenLabs failed:", elevenErr.message, "— falling back to gtts");
+        await generateWithGtts(audioText, filepath);
+        lastError = null; /* gtts succeeded — clear the error */
+      }
     } else {
-      console.warn("[AudioMessage] ELEVENLABS_API_KEY not set — falling back to gtts");
+      console.warn("[AudioMessage] ELEVENLABS_API_KEY not set — using gtts");
       await generateWithGtts(audioText, filepath);
     }
 
@@ -148,11 +159,12 @@ export async function sendAudioMessage(channel, text, label = "athena_voice") {
     }
 
     cleanup(filepath);
-    return true;
+    return { ok: true };
   } catch (err) {
-    console.error("[AudioMessage] Failed to generate/send audio:", err.message);
+    const finalError = lastError || err.message;
+    console.error("[AudioMessage] All TTS methods failed:", finalError);
     cleanup(filepath);
-    return false;
+    return { ok: false, error: finalError };
   }
 }
 
