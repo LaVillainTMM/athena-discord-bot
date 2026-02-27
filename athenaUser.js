@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from "uuid";
 import { admin, firestore } from "./firebase.js";
+import { getOrCreateVoiceProfile } from "./voiceRecognition.js";
 
 /* ── helpers ── */
 function usersCol() {
@@ -69,6 +70,14 @@ export async function getOrCreateAthenaUser(discordUser) {
         discord: discordUser.id,
         mobile: null,
         web: null,
+        voice: athenaUserId,
+      },
+
+      voiceProfile: {
+        profileId: athenaUserId,
+        totalVoiceSeconds: 0,
+        totalSessions: 0,
+        lastVoiceActivity: null,
       },
       linkedDevices: [],
 
@@ -90,6 +99,10 @@ export async function getOrCreateAthenaUser(discordUser) {
     });
 
     return athenaUserId;
+  }).then(newAthenaUserId => {
+    /* Bootstrap the voice recognition profile outside the transaction */
+    getOrCreateVoiceProfile(newAthenaUserId, discordUser).catch(() => {});
+    return newAthenaUserId;
   });
 }
 
