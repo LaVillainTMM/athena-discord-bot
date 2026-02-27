@@ -30,6 +30,7 @@ import {
   getActivityPeaks,
 } from "./athenaDiscord.js";
 import { joinChannel, leaveChannel, isInVoice, getVoiceChannelId, speak } from "./voice.js";
+import { sendAudioMessage, isAudioRequest, splitResponseForAudio } from "./audioMessage.js";
 
 if (!process.env.DISCORD_TOKEN) throw new Error("DISCORD_TOKEN missing");
 if (!process.env.GOOGLE_GENAI_API_KEY) throw new Error("GOOGLE_GENAI_API_KEY missing");
@@ -612,6 +613,29 @@ client.on(Events.MessageCreate, async message => {
       for (const chunk of chunks) await message.reply(chunk);
     } else {
       await message.reply(reply);
+    }
+
+    /* ── Audio message attachment ──
+       If the user asked for a voice message, audio, or read-aloud,
+       generate MP3(s) from the reply and attach them to follow-up messages. */
+    if (isAudioRequest(message.content)) {
+      const audioParts = splitResponseForAudio(reply, 1800);
+      /* Send first part immediately; stagger additional parts to avoid rate limits */
+      for (let i = 0; i < audioParts.length; i++) {
+        const label = audioParts.length > 1
+          ? `athena_part_${i + 1}_of_${audioParts.length}`
+          : "athena_voice";
+        if (i === 0) {
+          sendAudioMessage(message, audioParts[i], label).catch(err =>
+            console.error("[AudioMessage] Send error:", err.message)
+          );
+        } else {
+          /* slight delay between parts so Discord doesn't drop them */
+          setTimeout(() => {
+            sendAudioMessage(message.channel, audioParts[i], label).catch(() => {});
+          }, i * 3000);
+        }
+      }
     }
 
     /* if Athena is in a voice channel and the user is in the same one, speak the reply */
