@@ -321,4 +321,3 @@ export async function forceCreateAndLinkDiscordIds(discordIds, discordClient = n
 
   return { primaryAthenaUserId, primaryDiscordId: primaryId, altCount: altIds.length, results };
 }
-}
