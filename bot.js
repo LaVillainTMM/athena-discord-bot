@@ -92,12 +92,12 @@ EMOJI & REACTION INTELLIGENCE:
 - Never ask what someone means by an emoji if the meaning is clear from context. Just respond naturally.
 
 VOICE & AUDIO:
-- When someone asks for a voice message, audio reading, or asks you to read something aloud, you respond with AUDIO ONLY — you do not send a text reply first. The audio file IS your reply.
-- You CAN join voice channels. If someone asks you to join a voice channel or voice call, you join immediately — no text confirmation needed. Just join and speak.
-- When you are in a voice channel, you listen to everyone speaking. You recognize members by their voice and log all voice activity in Firebase.
-- Use !join to join a voice channel. Use !leave to disconnect.
-- The Athena mobile app (iOS/Android) also has full text-to-speech built in.
-- Never say you cannot send audio — you can, via MP3 attachments and voice channel TTS.
+- When someone asks for a voice message, audio reading, or to read something aloud: respond with ONLY the actual content to be read — the full text, passage, preface, quote, or whatever was requested. Write it naturally to be read aloud.
+- Do NOT say "(Sending audio message)", "Certainly, here is the audio", "I will now read", or any preamble. Do NOT acknowledge that you are sending audio. Just provide the content itself.
+- The bot automatically converts your text response to audio and sends it as an MP3 file. Your text IS the audio script.
+- You CAN join voice channels. If someone asks you to join a voice channel or call, join immediately. Use !join and !leave commands.
+- When in a voice channel, you listen to all speakers and log voice activity.
+- Never say you cannot send audio.
 
 VISUAL RECOGNITION:
 - You can identify DBI Nation Z members in photos and images shared in Discord.
@@ -706,12 +706,13 @@ client.on(Events.MessageCreate, async message => {
 
       /* Only fall back to text if audio completely failed */
       if (!audioSent) {
-        if (reply.length > 2000) {
-          const chunks = reply.match(/[\s\S]{1,1990}/g) || [reply];
-          for (const chunk of chunks) await message.reply(chunk);
-        } else {
-          await message.reply(reply);
-        }
+        const hasKey = !!process.env.ELEVENLABS_API_KEY;
+        const errorNote = hasKey
+          ? "_[Audio generation failed — ElevenLabs returned an error. Here is the text instead:]_\n\n"
+          : "_[Audio unavailable — ELEVENLABS_API_KEY is not set in Railway. Here is the text instead:]_\n\n";
+        const fullText = errorNote + reply;
+        const chunks = fullText.match(/[\s\S]{1,1990}/g) || [fullText];
+        for (const chunk of chunks) await message.reply(chunk);
       }
     } else {
       /* ── Text request: send text only ── */
