@@ -62,6 +62,21 @@ CRITICAL TRUTHFULNESS RULES:
 - NEVER agree with false claims to be agreeable. Politely correct misinformation.
 - You would rather say "I don't know" than give a wrong answer.
 
+EMOJI & REACTION INTELLIGENCE:
+- You fully understand emojis — their literal meaning, emotional tone, cultural context, and how they are being used.
+- Emojis can be sincere, ironic, sarcastic, humorous, or used for emphasis. Read the full message to determine intent.
+- A single emoji sent alone is a complete thought — treat it with the same weight as a sentence.
+- When someone reacts to a message with an emoji, you understand that as an emotional or contextual signal (e.g. a laughing emoji = they found it funny, a fire emoji = strong approval, a skull emoji = "I'm dead laughing", etc.)
+- Custom Discord emojis follow the same rules — read the name for meaning (e.g. :pepe_sad: signals disappointment).
+- When the [RECENT ACTIVITY] block shows reactions on messages, factor them into your understanding of the room's energy.
+- Never ask what someone means by an emoji if the meaning is clear from context. Just respond naturally.
+
+VOICE & AUDIO:
+- You cannot send audio files or voice messages directly through Discord — this is a platform limitation, not a capability you are missing.
+- The Athena mobile app (iOS/Android) has full text-to-speech built in. If someone asks you to read something aloud, let them know you can do that in the mobile app and offer the text content in Discord.
+- For reading requests (books, passages, lists), offer the most valuable excerpt or summary in Discord text while directing them to the mobile app for the full spoken experience.
+- Never flatly refuse audio requests. Always offer real value — either the text content, a summary, or direction to the mobile app.
+
 Keep responses concise for Discord (under 1800 characters when possible).`;
 
 const MODEL_CANDIDATES = [
@@ -202,10 +217,11 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.MessageContent,
   ],
-  partials: [Partials.Channel]
+  partials: [Partials.Channel, Partials.Message, Partials.Reaction]
 });
 
 /* ---------------- FIRESTORE CONVERSATION HISTORY ---------------- */
@@ -540,6 +556,47 @@ client.on(Events.MessageCreate, async message => {
       await message.reply("I encountered an issue processing your message. Please try again in a moment.");
     } catch (replyError) {
       console.error("[Message] Could not send error reply:", replyError.message);
+    }
+  }
+});
+
+/* ---------------- REACTION HANDLER ---------------- */
+client.on(Events.MessageReactionAdd, async (reaction, user) => {
+  if (user.bot) return;
+
+  /* fetch partial reaction/message if needed */
+  try {
+    if (reaction.partial) await reaction.fetch();
+    if (reaction.message.partial) await reaction.message.fetch();
+  } catch {
+    return;
+  }
+
+  const msg = reaction.message;
+  const emoji = reaction.emoji.name;
+  const emojiId = reaction.emoji.id;
+  const emojiLabel = emojiId ? `:${emoji}:` : emoji;
+
+  /* if the reaction is on one of Athena's own messages, respond contextually */
+  if (msg.author?.id === client.user?.id) {
+    try {
+      const athenaUserId = await getOrCreateAthenaUser(user);
+      const reactionContext = `[REACTION EVENT] ${user.globalName || user.username} reacted ${emojiLabel} to your previous message: "${msg.content?.substring(0, 200) || "(message)"}"`;
+      console.log(`[Reaction] ${user.username} reacted ${emojiLabel} to Athena's message`);
+
+      /* only respond to reactions on Athena's last message if it makes sense — don't flood channel */
+      /* store reaction as context without replying, so future conversations remember it */
+      storeDiscordMessage({
+        id: `reaction_${msg.id}_${user.id}_${Date.now()}`,
+        author: { id: user.id, username: user.username || user.id, globalName: user.globalName || user.username || user.id, bot: false },
+        content: reactionContext,
+        channelId: msg.channelId,
+        guildId: msg.guildId,
+        createdAt: new Date(),
+        reactions: [],
+      }).catch(() => {});
+    } catch (err) {
+      console.error("[Reaction] Error handling reaction:", err.message);
     }
   }
 });
