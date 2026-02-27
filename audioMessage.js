@@ -1,57 +1,103 @@
-import gtts from "node-gtts";
 import { createWriteStream, unlink } from "fs";
 import { AttachmentBuilder } from "discord.js";
+import https from "https";
 
-/* ── Split text at sentence boundaries for the 190-char TTS limit ── */
-function splitForTTS(text, maxLen = 180) {
-  const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
-  const chunks = [];
-  let current = "";
+/* ── ElevenLabs voice config ── */
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+const ELEVENLABS_VOICE_ID = "jB2lPb5DhAX6l1TLkKXy";
+const ELEVENLABS_MODEL = "eleven_multilingual_v2";
 
-  for (const s of sentences) {
-    const trimmed = s.replace(/\s+/g, " ").trim();
-    if (!trimmed) continue;
-    if ((current + " " + trimmed).length > maxLen) {
-      if (current) chunks.push(current.trim());
-      current = trimmed.length > maxLen ? trimmed.substring(0, maxLen) : trimmed;
-    } else {
-      current = current ? current + " " + trimmed : trimmed;
-    }
-  }
-  if (current.trim()) chunks.push(current.trim());
-  return chunks.length ? chunks : [text.substring(0, maxLen)];
+/* ── Voice settings — natural, human-like pacing with UK character ── */
+const VOICE_SETTINGS = {
+  stability: 0.42,          /* lower = more expressive, natural variation */
+  similarity_boost: 0.80,   /* stay faithful to the chosen voice */
+  style: 0.38,              /* adds measured expressiveness and rhythm */
+  use_speaker_boost: true,  /* clarity and presence */
+};
+
+/* ── Generate MP3 via ElevenLabs API ── */
+function generateWithElevenLabs(text, filepath) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({
+      text,
+      model_id: ELEVENLABS_MODEL,
+      voice_settings: VOICE_SETTINGS,
+    });
+
+    const options = {
+      hostname: "api.elevenlabs.io",
+      path: `/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
+      method: "POST",
+      headers: {
+        "xi-api-key": ELEVENLABS_API_KEY,
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+        "Accept": "audio/mpeg",
+      },
+    };
+
+    const fileStream = createWriteStream(filepath);
+    const req = https.request(options, (res) => {
+      if (res.statusCode !== 200) {
+        let err = "";
+        res.on("data", (d) => (err += d));
+        res.on("end", () => {
+          fileStream.destroy();
+          reject(new Error(`ElevenLabs API error ${res.statusCode}: ${err.substring(0, 200)}`));
+        });
+        return;
+      }
+      res.pipe(fileStream);
+      fileStream.on("finish", resolve);
+      fileStream.on("error", reject);
+    });
+
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
 }
 
-/* ── Generate a single MP3 file from text (handles chunking internally) ──
-   Concatenates MP3 byte streams from multiple TTS requests into one file.
-   MP3 frames are independently decodable so appending works correctly. */
-function generateAudioFile(text, filepath) {
+/* ── Fallback: node-gtts (used only if ElevenLabs key is not set) ── */
+async function generateWithGtts(text, filepath) {
+  const { default: gtts } = await import("node-gtts");
+
+  /* Split at sentence boundaries for the 190-char TTS limit */
+  function splitForTTS(t, maxLen = 180) {
+    const sentences = t.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [t];
+    const chunks = [];
+    let current = "";
+    for (const s of sentences) {
+      const trimmed = s.replace(/\s+/g, " ").trim();
+      if (!trimmed) continue;
+      if ((current + " " + trimmed).length > maxLen) {
+        if (current) chunks.push(current.trim());
+        current = trimmed.length > maxLen ? trimmed.substring(0, maxLen) : trimmed;
+      } else {
+        current = current ? current + " " + trimmed : trimmed;
+      }
+    }
+    if (current.trim()) chunks.push(current.trim());
+    return chunks.length ? chunks : [t.substring(0, maxLen)];
+  }
+
   return new Promise((resolve, reject) => {
     const chunks = splitForTTS(text);
     const fileStream = createWriteStream(filepath);
     let index = 0;
 
     const writeNext = () => {
-      if (index >= chunks.length) {
-        fileStream.end();
-        return;
-      }
+      if (index >= chunks.length) { fileStream.end(); return; }
       const chunk = chunks[index++];
       const tts = new gtts("en");
       const ttsStream = tts.stream(chunk);
-
-      ttsStream.on("error", err => {
-        fileStream.destroy();
-        reject(err);
-      });
-
+      ttsStream.on("error", (err) => { fileStream.destroy(); reject(err); });
       ttsStream.on("end", writeNext);
       ttsStream.pipe(fileStream, { end: false });
     };
 
     fileStream.on("finish", resolve);
     fileStream.on("error", reject);
-
     writeNext();
   });
 }
@@ -74,15 +120,21 @@ function cleanup(filepath) {
      true on success, false on failure
 ────────────────────────────────────────────────────── */
 export async function sendAudioMessage(channel, text, label = "athena_voice") {
-  /* Cap at ~2000 chars per audio file — longer content should be chunked by caller */
-  const audioText = text.substring(0, 2000).trim();
+  const audioText = text.substring(0, 5000).trim();
   if (!audioText) return false;
 
-  const safeName = label.replace(/[^a-zA-Z0-9_\- ]/g, "").trim().replace(/\s+/g, "_") || "athena_voice";
+  const safeName =
+    label.replace(/[^a-zA-Z0-9_\- ]/g, "").trim().replace(/\s+/g, "_") || "athena_voice";
   const filepath = `/tmp/${safeName}_${Date.now()}.mp3`;
 
   try {
-    await generateAudioFile(audioText, filepath);
+    if (ELEVENLABS_API_KEY) {
+      console.log("[AudioMessage] Using ElevenLabs TTS");
+      await generateWithElevenLabs(audioText, filepath);
+    } else {
+      console.warn("[AudioMessage] ELEVENLABS_API_KEY not set — falling back to gtts");
+      await generateWithGtts(audioText, filepath);
+    }
 
     const attachment = new AttachmentBuilder(filepath, {
       name: `${safeName}.mp3`,
@@ -110,17 +162,17 @@ export async function sendAudioMessage(channel, text, label = "athena_voice") {
    response — used to decide whether to attach an MP3.
 ────────────────────────────────────────────────────── */
 export function isAudioRequest(content) {
-  return /\b(voice\s*message|voice\s*memo|read\s*(me|it|aloud|out\s*loud|this)|send\s*(me\s*)?(an?\s*)?(audio|voice|mp3)|audio\s*(version|of|message|clip)|narrate|speak\s*(it|this|me|to\s*me|out)|listen\s*to|as\s*audio|in\s*audio)\b/i
-    .test(content);
+  return /\b(voice\s*message|voice\s*memo|read\s*(me|it|aloud|out\s*loud|this)|send\s*(me\s*)?(an?\s*)?(audio|voice|mp3)|audio\s*(version|of|message|clip)|narrate|speak\s*(it|this|me|to\s*me|out)|listen\s*to|as\s*audio|in\s*audio)\b/i.test(
+    content
+  );
 }
 
 /* ──────────────────────────────────────────────────────
    SPLIT LONG RESPONSE FOR MULTI-PART AUDIO
-   For very long responses (e.g. multiple laws), splits
-   the text into parts of up to `maxLen` chars each so
-   they can be sent as separate audio files.
+   For very long responses, splits text into parts of up
+   to `maxLen` chars each to be sent as separate files.
 ────────────────────────────────────────────────────── */
-export function splitResponseForAudio(text, maxLen = 1800) {
+export function splitResponseForAudio(text, maxLen = 4500) {
   if (text.length <= maxLen) return [text];
 
   const parts = [];
