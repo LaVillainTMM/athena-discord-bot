@@ -232,3 +232,93 @@ export async function linkDiscordId(athenaUserId, discordId) {
     tx.update(ref, { "discord.linkedIds": ids });
   });
 }
+
+/* ────────────────────────────────────────────
+   FORCE CREATE & LINK DISCORD IDS
+   Admin-only. Creates a unified Athena profile for a person
+   who controls multiple Discord accounts, even if those
+   accounts have never messaged Athena before.
+
+   discordIds[0] = primary (canonical) identity
+   discordIds[1..] = alt accounts to merge in
+
+   If the primary has no profile, one is created from scratch.
+   The Discord client is used to resolve usernames where possible.
+──────────────────────────────────────────── */
+export async function forceCreateAndLinkDiscordIds(discordIds, discordClient = null) {
+  if (!discordIds || discordIds.length < 1) throw new Error("At least one Discord ID is required");
+
+  const [primaryId, ...altIds] = discordIds;
+
+  async function fetchUsername(id) {
+    if (!discordClient) return id;
+    try {
+      const user = await discordClient.users.fetch(id);
+      return user.globalName || user.username || id;
+    } catch {
+      return id;
+    }
+  }
+
+  const primaryAccountRef = accountsCol("discord").doc(primaryId);
+  const primaryDoc = await primaryAccountRef.get();
+  let primaryAthenaUserId;
+
+  if (primaryDoc.exists) {
+    primaryAthenaUserId = primaryDoc.data().athenaUserId;
+    console.log(`[ForceLink] Primary ${primaryId} already has profile ${primaryAthenaUserId}`);
+  } else {
+    const username = await fetchUsername(primaryId);
+    primaryAthenaUserId = uuidv4();
+    const now = admin.firestore.FieldValue.serverTimestamp();
+
+    await firestore.runTransaction(async tx => {
+      tx.set(profileRef(primaryAthenaUserId), {
+        athenaUserId: primaryAthenaUserId,
+        displayName: username,
+        discord: {
+          id: primaryId,
+          username,
+          globalName: username,
+          avatarURL: null,
+          linkedIds: [primaryId],
+          linkedAt: now,
+        },
+        nation: null,
+        quizCompleted: false,
+        quizCompletedAt: null,
+        quizVersion: null,
+        quizSessionSize: null,
+        quizScore: null,
+        linkedPlatforms: { discord: primaryId, mobile: null, web: null },
+        linkedDevices: [],
+        messageCounts: { total: 0, discord: 0, mobile: 0, web: 0 },
+        lastSeen: now,
+        createdAt: now,
+        adminLinked: true,
+      });
+      tx.set(primaryAccountRef, {
+        athenaUserId: primaryAthenaUserId,
+        username,
+        globalName: username,
+        linkedAt: now,
+        adminLinked: true,
+      });
+    });
+
+    console.log(`[ForceLink] Created new profile ${primaryAthenaUserId} for Discord ID ${primaryId} (${username})`);
+  }
+
+  const results = [];
+  for (const altId of altIds) {
+    try {
+      const result = await mergeDiscordAccounts(primaryId, altId);
+      results.push({ id: altId, status: result.alreadyMerged ? "already_linked" : "linked" });
+    } catch (err) {
+      results.push({ id: altId, status: "failed", error: err.message });
+    }
+  }
+
+  return { primaryAthenaUserId, primaryDiscordId: primaryId, altCount: altIds.length, results };
+}
+}
