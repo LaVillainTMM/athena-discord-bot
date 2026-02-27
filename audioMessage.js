@@ -1,6 +1,6 @@
 import { writeFile, unlink } from "fs/promises";
 import { AttachmentBuilder } from "discord.js";
-import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
+import { ElevenLabsClient } from "elevenlabs";
 
 /* ── ElevenLabs voice config ── */
 const ELEVENLABS_VOICE_ID = "z1rEShu1SmowIOAmbHl1"; /* Lily — British female, velvety actress */
