@@ -653,7 +653,7 @@ client.on(Events.MessageCreate, async message => {
        If the user asked for a voice message, audio, or read-aloud,
        generate MP3(s) from the reply and attach them to follow-up messages. */
     if (isAudioRequest(message.content)) {
-      const audioParts = splitResponseForAudio(reply, 1800);
+      const audioParts = splitResponseForAudio(reply, 5000);
       /* Send first part immediately; stagger additional parts to avoid rate limits */
       for (let i = 0; i < audioParts.length; i++) {
         const label = audioParts.length > 1
