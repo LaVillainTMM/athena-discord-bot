@@ -101,11 +101,11 @@ VOICE & AUDIO:
 - When in a voice channel, you listen to all speakers and log voice activity.
 - Never say you cannot send audio.
 
-VOICE AWARENESS (ON REQUEST):
-- When asked about voice calls, who was in VC, or what was said in a call, you will receive a full voice session history block with participant names, durations, chat logs, and group analysis.
-- Audio transcripts from Whisper voice recognition are stored per-utterance in Firebase. If asked what someone said in VC, you can cite it from the provided data.
-- Only surface voice call information when explicitly asked — do not proactively mention calls unless someone brings it up.
-- Admins can use !voicelogs to retrieve full audio log history.
+VOICE AWARENESS (CONTEXTUAL):
+- If the person you are responding to was in a recent voice call, you will automatically receive a [VOICE CALL CONTEXT] block with their session details — participant names, duration, chat messages from the call, and group dynamics analysis. Use this naturally in conversation where relevant.
+- If someone explicitly asks about voice calls, VC history, or what was said in a call, you will receive a full voice session history block. Answer from that data directly.
+- Do not volunteer call information unprompted to users who were NOT in that call.
+- Admins can use !voicelogs to retrieve full audio log and transcript history.
 
 VISUAL RECOGNITION:
 - You can identify DBI Nation Z members in photos and images shared in Discord.
@@ -196,15 +196,47 @@ function buildLiveContext() {
   );
 }
 
-/* ── Compact async voice awareness block (recent sessions) ── */
-async function buildVoiceAwarenessContext(guildId) {
-  if (!guildId) return "";
+/* ── Voice context for a specific user ──
+   Returns call summary ONLY if the given discordUserId was in a recent session.
+   Used to contextualise Athena's response without broadcasting call info to everyone. */
+async function buildVoiceContextForUser(guildId, discordUserId) {
+  if (!guildId || !discordUserId) return "";
   try {
-    const sessions = await getRecentVoiceSessions(guildId, 3);
-    if (!sessions || sessions.length === 0) return "";
+    /* Check in-memory active sessions first (zero Firestore cost) */
+    for (const [, session] of activeSessions) {
+      if (session.participants.has(discordUserId)) {
+        const names = [...session.participants.values()].map(p => p.displayName).join(", ");
+        const since = session.startTime
+          ? session.startTime.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "UTC", hour12: true }) + " UTC"
+          : "unknown time";
+        const textLog = Array.isArray(session.textLog) ? session.textLog : [];
+        const lines = [
+          `[VOICE CALL CONTEXT — this user is currently in a call]\n`,
+          `• ACTIVE — #${session.channelName} since ${since} — participants: ${names}`,
+        ];
+        if (textLog.length > 0) {
+          lines.push(`  Chat during call:`);
+          for (const entry of textLog.slice(-8)) {
+            lines.push(`    [${entry.displayName}]: ${entry.content}`);
+          }
+        }
+        lines.push(`[END VOICE CALL CONTEXT]\n`);
+        return lines.join("\n");
+      }
+    }
 
-    const lines = ["[RECENT VOICE CALLS]\n"];
-    for (const s of sessions) {
+    /* Check recent completed sessions — did this user participate? */
+    const sessions = await getRecentVoiceSessions(guildId, 5);
+    const userSessions = sessions.filter(s => {
+      const participants = Array.isArray(s.participants) ? s.participants : [];
+      return participants.some(p => p.discordId === discordUserId);
+    });
+
+    if (userSessions.length === 0) return "";
+
+    /* User was in a recent call — include their session data */
+    const lines = [`[VOICE CALL CONTEXT — this user was in a recent call]\n`];
+    for (const s of userSessions) {
       const start = s.startTime?.toDate?.() ?? new Date(s.startTime);
       const durationMins = s.duration ? `${Math.round(s.duration / 60)} min` : "ongoing";
       const participants = Array.isArray(s.participants) ? s.participants : [];
@@ -213,12 +245,10 @@ async function buildVoiceAwarenessContext(guildId) {
 
       lines.push(`• #${s.channelName} [${status}] — ${start.toLocaleDateString("en-US", { month: "short", day: "numeric" })} — ${names} — ${durationMins}`);
 
-      /* include Gemini group insights if available */
       if (s.insights?.groupDynamic) {
         lines.push(`  Group: ${s.insights.groupDynamic}`);
       }
 
-      /* include text messages from participants during the call */
       const textLog = Array.isArray(s.textLog) ? s.textLog : [];
       if (textLog.length > 0) {
         lines.push(`  Chat during call (${textLog.length} msgs):`);
@@ -228,7 +258,7 @@ async function buildVoiceAwarenessContext(guildId) {
         if (textLog.length > 8) lines.push(`    ... +${textLog.length - 8} more`);
       }
     }
-    lines.push("[END RECENT VOICE CALLS]\n");
+    lines.push(`[END VOICE CALL CONTEXT]\n`);
     return lines.join("\n");
   } catch (_) {
     return "";
@@ -514,7 +544,13 @@ async function getAthenaResponse(content, athenaUserId, discordUserId, channel, 
     ? `[KNOWLEDGE BASE — ${knowledgeEntries.length} entries]\n${knowledgeEntries.slice(0, 20).join("\n")}\n[END KNOWLEDGE BASE]\n\n`
     : "";
 
-  const fullMessage = liveContext + knowledgeBlock + serverContext + content;
+  /* Include voice call context only if the sender was in a recent call,
+     or if this was an explicit voice session query (already in serverContext) */
+  const voiceAwareness = voiceSessionRequest
+    ? ""  /* explicit query already handled in serverContext — no duplication */
+    : await buildVoiceContextForUser(effectiveGuildId, discordUserId);
+
+  const fullMessage = liveContext + knowledgeBlock + voiceAwareness + serverContext + content;
 
   let reply;
   try {
