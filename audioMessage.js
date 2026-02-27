@@ -4,7 +4,7 @@ import https from "https";
 
 /* ── ElevenLabs voice config ── */
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-const ELEVENLABS_VOICE_ID = "jB2lPb5DhAX6l1TLkKXy";
+const ELEVENLABS_VOICE_ID = "pFZP5JQG7iQjIQuC4Bku"; /* Lily — British female, velvety actress */
 const ELEVENLABS_MODEL = "eleven_multilingual_v2";
 
 /* ── Voice settings — natural, human-like pacing with UK character ── */
