@@ -10,9 +10,9 @@ import {
 } from "@discordjs/voice";
 import opusPkg from "@discordjs/opus";
 const { OpusEncoder } = opusPkg;
-import { createWriteStream, unlink, writeFileSync } from "fs";
+import { unlink, writeFileSync } from "fs";
+import { writeFile } from "fs/promises";
 import { execFile } from "child_process";
-import https from "https";
 import { PassThrough } from "stream";
 import ffmpegPath from "ffmpeg-static";
 import { admin, firestore } from "./firebase.js";
@@ -20,61 +20,54 @@ import { admin, firestore } from "./firebase.js";
 /* Map of guildId → { connection, player, channelId } */
 const voiceConnections = new Map();
 
-/* ── ElevenLabs config (mirrors audioMessage.js) ── */
-const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-const ELEVENLABS_VOICE_ID = "pFZP5JQG7iQjIQuC4Bku"; /* Lily — British female, velvety actress */
-const ELEVENLABS_MODEL = "eleven_multilingual_v2";
-const VOICE_SETTINGS = {
-  stability: 0.42,
-  similarity_boost: 0.80,
-  style: 0.38,
-  use_speaker_boost: true,
-};
+/* ── Azure TTS config (mirrors audioMessage.js) ── */
+const AZURE_VOICE         = "en-GB-SoniaNeural";
+const AZURE_OUTPUT_FORMAT = "audio-24khz-160kbitrate-mono-mp3";
 
-/* ── Generate MP3 to a temp file via ElevenLabs ── */
-function elevenLabsToFile(text, filepath) {
-  return new Promise((resolve, reject) => {
-    const body = JSON.stringify({
-      text,
-      model_id: ELEVENLABS_MODEL,
-      voice_settings: VOICE_SETTINGS,
-    });
-
-    const options = {
-      hostname: "api.elevenlabs.io",
-      path: `/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
-      method: "POST",
-      headers: {
-        "xi-api-key": ELEVENLABS_API_KEY,
-        "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(body),
-        "Accept": "audio/mpeg",
-      },
-    };
-
-    const fileStream = createWriteStream(filepath);
-    const req = https.request(options, (res) => {
-      if (res.statusCode !== 200) {
-        let errBody = "";
-        res.on("data", (d) => (errBody += d));
-        res.on("end", () => {
-          fileStream.destroy();
-          reject(new Error(`ElevenLabs ${res.statusCode}: ${errBody.substring(0, 150)}`));
-        });
-        return;
-      }
-      res.pipe(fileStream);
-      fileStream.on("finish", resolve);
-      fileStream.on("error", reject);
-    });
-
-    req.on("error", reject);
-    req.write(body);
-    req.end();
-  });
+function escapeXml(text) {
+  return text
+    .replace(/&/g,  "&amp;")
+    .replace(/</g,  "&lt;")
+    .replace(/>/g,  "&gt;")
+    .replace(/"/g,  "&quot;")
+    .replace(/'/g,  "&apos;");
 }
 
-/* ── Fallback: node-gtts stream (used when ElevenLabs key is absent) ── */
+/* ── Generate MP3 to a temp file via Azure TTS ── */
+async function azureTtsToFile(text, filepath) {
+  const key    = process.env.AZURE_SPEECH_KEY;
+  const region = process.env.AZURE_SPEECH_REGION || "eastus";
+
+  const ssml = `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-GB'>
+  <voice name='${AZURE_VOICE}'>
+    <prosody rate='-5%' pitch='+2%'>${escapeXml(text)}</prosody>
+  </voice>
+</speak>`;
+
+  const response = await fetch(
+    `https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`,
+    {
+      method: "POST",
+      headers: {
+        "Ocp-Apim-Subscription-Key": key,
+        "Content-Type":              "application/ssml+xml",
+        "X-Microsoft-OutputFormat":  AZURE_OUTPUT_FORMAT,
+        "User-Agent":                "AthenaBot",
+      },
+      body: ssml,
+    }
+  );
+
+  if (!response.ok) {
+    const err = await response.text().catch(() => "");
+    throw new Error(`Azure TTS ${response.status}: ${err.substring(0, 200)}`);
+  }
+
+  const buffer = await response.arrayBuffer();
+  await writeFile(filepath, Buffer.from(buffer));
+}
+
+/* ── Fallback: node-gtts stream (used when Azure key is absent) ── */
 
 /* Split long text at sentence boundaries for Google TTS 190-char limit */
 function splitText(text, maxLen = 190) {
@@ -182,16 +175,16 @@ function playAndWait(player, resource) {
   });
 }
 
-/* ── Speak text in a voice channel using ElevenLabs (fallback: gtts) ── */
+/* ── Speak text in a voice channel using Azure TTS (fallback: gtts) ── */
 export async function speak(guild, voiceChannel, text) {
   try {
     const state = await joinChannel(guild, voiceChannel);
 
-    if (ELEVENLABS_API_KEY) {
-      /* ElevenLabs: generate MP3 file, stream it into Discord */
+    if (process.env.AZURE_SPEECH_KEY) {
+      /* Azure TTS: generate MP3 file, stream it into Discord */
       const filepath = `/tmp/voice_${Date.now()}.mp3`;
       try {
-        await elevenLabsToFile(text.substring(0, 5000), filepath);
+        await azureTtsToFile(text.substring(0, 5000), filepath);
         const resource = createAudioResource(filepath, { inputType: StreamType.Arbitrary });
         await playAndWait(state.player, resource);
       } finally {
