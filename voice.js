@@ -7,13 +7,70 @@ import {
   StreamType,
   entersState,
 } from "@discordjs/voice";
-import gtts from "node-gtts";
+import { createWriteStream, unlink } from "fs";
+import https from "https";
 import { PassThrough } from "stream";
 
 /* Map of guildId → { connection, player, channelId } */
 const voiceConnections = new Map();
 
-/* Split long text at sentence boundaries for Google TTS chunk limit */
+/* ── ElevenLabs config (mirrors audioMessage.js) ── */
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+const ELEVENLABS_VOICE_ID = "jB2lPb5DhAX6l1TLkKXy";
+const ELEVENLABS_MODEL = "eleven_multilingual_v2";
+const VOICE_SETTINGS = {
+  stability: 0.42,
+  similarity_boost: 0.80,
+  style: 0.38,
+  use_speaker_boost: true,
+};
+
+/* ── Generate MP3 to a temp file via ElevenLabs ── */
+function elevenLabsToFile(text, filepath) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({
+      text,
+      model_id: ELEVENLABS_MODEL,
+      voice_settings: VOICE_SETTINGS,
+    });
+
+    const options = {
+      hostname: "api.elevenlabs.io",
+      path: `/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
+      method: "POST",
+      headers: {
+        "xi-api-key": ELEVENLABS_API_KEY,
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+        "Accept": "audio/mpeg",
+      },
+    };
+
+    const fileStream = createWriteStream(filepath);
+    const req = https.request(options, (res) => {
+      if (res.statusCode !== 200) {
+        let errBody = "";
+        res.on("data", (d) => (errBody += d));
+        res.on("end", () => {
+          fileStream.destroy();
+          reject(new Error(`ElevenLabs ${res.statusCode}: ${errBody.substring(0, 150)}`));
+        });
+        return;
+      }
+      res.pipe(fileStream);
+      fileStream.on("finish", resolve);
+      fileStream.on("error", reject);
+    });
+
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+/* ── Fallback: node-gtts stream (used when ElevenLabs key is absent) ── */
+
+/* Split long text at sentence boundaries for Google TTS 190-char limit */
 function splitText(text, maxLen = 190) {
   const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
   const chunks = [];
@@ -30,15 +87,15 @@ function splitText(text, maxLen = 190) {
   return chunks.length ? chunks : [text.substring(0, maxLen)];
 }
 
-/* Create a TTS audio stream using Google Translate TTS (no API key needed) */
-function ttsStream(text) {
+async function gttsTtsStream(text) {
+  const { default: gtts } = await import("node-gtts");
   const tts = new gtts("en");
   const pass = new PassThrough();
   tts.stream(text).pipe(pass);
   return pass;
 }
 
-/* Join a voice channel — returns the voice state for this guild */
+/* ── Join a voice channel ── */
 export async function joinChannel(guild, voiceChannel) {
   const existing = voiceConnections.get(guild.id);
   if (existing) {
@@ -83,7 +140,7 @@ export async function joinChannel(guild, voiceChannel) {
   return state;
 }
 
-/* Leave the voice channel in a guild */
+/* ── Leave the voice channel in a guild ── */
 export function leaveChannel(guildId) {
   const state = voiceConnections.get(guildId);
   if (!state) return false;
@@ -93,46 +150,57 @@ export function leaveChannel(guildId) {
   return true;
 }
 
-/* Check if Athena is currently in a voice channel in this guild */
 export function isInVoice(guildId) {
   return voiceConnections.has(guildId);
 }
 
-/* Get the voice channel ID Athena is currently in for this guild */
 export function getVoiceChannelId(guildId) {
   return voiceConnections.get(guildId)?.channelId ?? null;
 }
 
-/* Speak text in a voice channel — joins if not already there
-   Returns true on success, false on failure */
+/* ── Helper: play a single audio resource and wait for it to finish ── */
+function playAndWait(player, resource) {
+  return new Promise((resolve) => {
+    const onIdle = () => {
+      player.removeListener("error", onError);
+      resolve();
+    };
+    const onError = (err) => {
+      console.error("[Voice] Playback error:", err.message);
+      player.removeListener(AudioPlayerStatus.Idle, onIdle);
+      resolve();
+    };
+    player.play(resource);
+    player.once(AudioPlayerStatus.Idle, onIdle);
+    player.once("error", onError);
+  });
+}
+
+/* ── Speak text in a voice channel using ElevenLabs (fallback: gtts) ── */
 export async function speak(guild, voiceChannel, text) {
   try {
     const state = await joinChannel(guild, voiceChannel);
-    const chunks = splitText(text);
 
-    for (const chunk of chunks) {
-      await new Promise((resolve) => {
-        const stream = ttsStream(chunk);
-        const resource = createAudioResource(stream, {
-          inputType: StreamType.Arbitrary,
-        });
-
-        state.player.play(resource);
-
-        const onIdle = () => {
-          state.player.removeListener("error", onError);
-          resolve();
-        };
-        const onError = (err) => {
-          console.error("[Voice] Playback error:", err.message);
-          state.player.removeListener(AudioPlayerStatus.Idle, onIdle);
-          resolve();
-        };
-
-        state.player.once(AudioPlayerStatus.Idle, onIdle);
-        state.player.once("error", onError);
-      });
+    if (ELEVENLABS_API_KEY) {
+      /* ElevenLabs: generate MP3 file, stream it into Discord */
+      const filepath = `/tmp/voice_${Date.now()}.mp3`;
+      try {
+        await elevenLabsToFile(text.substring(0, 5000), filepath);
+        const resource = createAudioResource(filepath, { inputType: StreamType.Arbitrary });
+        await playAndWait(state.player, resource);
+      } finally {
+        unlink(filepath, () => {});
+      }
+    } else {
+      /* Fallback: node-gtts in chunks */
+      const chunks = splitText(text);
+      for (const chunk of chunks) {
+        const stream = await gttsTtsStream(chunk);
+        const resource = createAudioResource(stream, { inputType: StreamType.Arbitrary });
+        await playAndWait(state.player, resource);
+      }
     }
+
     return true;
   } catch (err) {
     console.error("[Voice] speak() failed:", err.message);
