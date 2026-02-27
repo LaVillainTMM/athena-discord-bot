@@ -961,22 +961,22 @@ client.on(Events.MessageCreate, async message => {
 
       /* Only fall back to text if audio completely failed */
       if (!audioSent) {
-        const hasKey = !!process.env.ELEVENLABS_API_KEY;
+        const hasKey = !!process.env.AZURE_SPEECH_KEY;
         let errorNote;
         if (!hasKey) {
-          errorNote = "_[Voice unavailable — ElevenLabs key not configured. Here is the text instead:]_\n\n";
+          errorNote = "_[Voice unavailable — Azure Speech key not configured. Here is the text instead:]_\n\n";
         } else if (lastAudioError) {
           let friendlyError = "voice generation failed";
-          if (lastAudioError.includes("detected_unusual_activity")) {
-            friendlyError = "API key flagged for unusual activity — please regenerate the ElevenLabs key";
-          } else if (lastAudioError.includes("401")) {
-            friendlyError = "API key invalid or expired";
+          if (lastAudioError.includes("401")) {
+            friendlyError = "Azure Speech key invalid or expired";
+          } else if (lastAudioError.includes("403")) {
+            friendlyError = "Azure Speech key unauthorised — check the key and region";
           } else if (lastAudioError.includes("429")) {
             friendlyError = "rate limit reached — try again shortly";
           } else if (lastAudioError.includes("quota") || lastAudioError.includes("limit")) {
-            friendlyError = "monthly character quota exceeded";
+            friendlyError = "monthly quota exceeded";
           } else if (lastAudioError.includes("ECONNREFUSED") || lastAudioError.includes("ETIMEDOUT")) {
-            friendlyError = "could not reach ElevenLabs — network error";
+            friendlyError = "could not reach Azure — network error";
           }
           errorNote = `_[Voice unavailable — ${friendlyError}. Here is the text instead:]_\n\n`;
         } else {
