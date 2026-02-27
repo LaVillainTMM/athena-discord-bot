@@ -20,6 +20,7 @@ import {
   getKnownChannels,
   getActivityPeaks,
 } from "./athenaDiscord.js";
+import { joinChannel, leaveChannel, isInVoice, getVoiceChannelId, speak } from "./voice.js";
 
 if (!process.env.DISCORD_TOKEN) throw new Error("DISCORD_TOKEN missing");
 if (!process.env.GOOGLE_GENAI_API_KEY) throw new Error("GOOGLE_GENAI_API_KEY missing");
@@ -218,6 +219,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.DirectMessages,
     GatewayIntentBits.MessageContent,
   ],
@@ -497,6 +499,16 @@ client.on(Events.MessageCreate, async message => {
   /* store every message for awareness — non-blocking */
   storeDiscordMessage(message).catch(() => {});
 
+  /* voice commands */
+  if (
+    message.content.startsWith("!join") ||
+    message.content.startsWith("!leave") ||
+    message.content.startsWith("!speak ")
+  ) {
+    await handleVoiceCommand(message);
+    return;
+  }
+
   /* admin commands */
   if (message.content.startsWith("!forcelink")) {
     await handleForceLinkById(message);
@@ -550,6 +562,15 @@ client.on(Events.MessageCreate, async message => {
     } else {
       await message.reply(reply);
     }
+
+    /* if Athena is in a voice channel and the user is in the same one, speak the reply */
+    if (!isDM && isInVoice(message.guild.id)) {
+      const userVoiceChannel = message.member?.voice?.channel;
+      const athenaChannelId = getVoiceChannelId(message.guild.id);
+      if (userVoiceChannel && userVoiceChannel.id === athenaChannelId) {
+        speak(message.guild, userVoiceChannel, reply).catch(() => {});
+      }
+    }
   } catch (error) {
     console.error("[Message] Error:", error);
     try {
@@ -559,6 +580,55 @@ client.on(Events.MessageCreate, async message => {
     }
   }
 });
+
+/* ────────────────────────────────────────────
+   VOICE COMMANDS
+   !join  — Athena joins the voice channel the user is in
+   !leave — Athena leaves the voice channel
+   !speak <text> — Athena speaks the given text aloud
+──────────────────────────────────────────── */
+async function handleVoiceCommand(message) {
+  if (message.channel.type === ChannelType.DM) {
+    await message.reply("Voice commands only work in a server.");
+    return;
+  }
+
+  const cmd = message.content.trim().toLowerCase();
+
+  if (cmd.startsWith("!leave")) {
+    const left = leaveChannel(message.guild.id);
+    await message.reply(left ? "I've left the voice channel." : "I wasn't in a voice channel.");
+    return;
+  }
+
+  const voiceChannel = message.member?.voice?.channel;
+  if (!voiceChannel) {
+    await message.reply("You need to be in a voice channel first.");
+    return;
+  }
+
+  if (cmd.startsWith("!join")) {
+    try {
+      await joinChannel(message.guild, voiceChannel);
+      await message.reply(`Joined **${voiceChannel.name}**. I'll speak my responses aloud while I'm here.`);
+    } catch (err) {
+      await message.reply(`Could not join: ${err.message}`);
+    }
+    return;
+  }
+
+  if (cmd.startsWith("!speak ")) {
+    const text = message.content.slice(7).trim();
+    if (!text) {
+      await message.reply("Usage: `!speak <text to read aloud>`");
+      return;
+    }
+    await message.reply(`Speaking in **${voiceChannel.name}**...`);
+    const ok = await speak(message.guild, voiceChannel, text);
+    if (!ok) await message.reply("Something went wrong with audio playback. Check bot permissions.");
+    return;
+  }
+}
 
 /* ---------------- REACTION HANDLER ---------------- */
 client.on(Events.MessageReactionAdd, async (reaction, user) => {
