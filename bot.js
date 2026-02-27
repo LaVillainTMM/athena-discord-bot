@@ -248,18 +248,21 @@ async function saveMessage(athenaUserId, discordUserId, userMessage, aiResponse)
   }
 }
 
-/* ---------------- SYNC EXISTING MEMBER ROLES → FULL PROFILE ---------------- */
-async function syncUserRoleToFirebase(member) {
-  const nation = NATION_ROLES.find(r => member.roles?.cache?.some(role => role.name === r));
-  if (!nation) return;
+/* ── sync ANY guild member into Firebase (bot excluded) ── */
+async function syncMemberToFirebase(member) {
+  if (member.user.bot) return;
   try {
     const athenaUserId = await getOrCreateAthenaUser(member.user);
-    await updateUserNation(athenaUserId, nation, { version: "sync" });
-    console.log(`[Sync] ${member.user.username} → ${nation}`);
+    const nation = NATION_ROLES.find(r => member.roles?.cache?.some(role => role.name === r));
+    if (nation) await updateUserNation(athenaUserId, nation, { version: "sync" });
+    console.log(`[Sync] ${member.user.username}${nation ? ` → ${nation}` : " (no role yet)"}`);
   } catch (error) {
     console.error(`[Sync] Error for ${member.user.username}:`, error.message);
   }
 }
+
+/* keep old name as alias so GuildMemberUpdate references still work */
+const syncUserRoleToFirebase = syncMemberToFirebase;
 
 /* ---------------- GUILD JOIN QUIZ ---------------- */
 client.on(Events.GuildMemberAdd, async member => {
@@ -497,16 +500,21 @@ client.once(Events.ClientReady, async () => {
     console.log(`[Athena] Primary guild: ${client.guilds.cache.first().name} (${primaryGuildId})`);
   }
 
-  /* 1. Sync existing member roles → full contact cards */
+  /* 1. Sync ALL guild members → full contact cards (bots excluded) */
   for (const [, guild] of client.guilds.cache) {
     try {
       const members = await guild.members.fetch();
+      const all = [...members.values()].filter(m => !m.user.bot);
+      console.log(`[Athena] Syncing ${all.length} members from ${guild.name}...`);
+
+      /* process in batches of 10 to avoid flooding Firestore */
       let synced = 0;
-      for (const [, member] of members) {
-        const nation = NATION_ROLES.find(r => member.roles?.cache?.some(role => role.name === r));
-        if (nation) { await syncUserRoleToFirebase(member); synced++; }
+      for (let i = 0; i < all.length; i += 10) {
+        const batch = all.slice(i, i + 10);
+        await Promise.allSettled(batch.map(m => syncMemberToFirebase(m)));
+        synced += batch.length;
       }
-      console.log(`[Athena] Synced ${synced} members from ${guild.name}`);
+      console.log(`[Athena] Synced ${synced} / ${all.length} members from ${guild.name}`);
     } catch (error) {
       console.error(`[Athena] Sync error:`, error.message);
     }
