@@ -51,7 +51,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Embrace the darkness",
+        "text": "Challenging the norm and embracing darkness",
         "nation": "PsycZ"
       }
     ]
@@ -77,7 +77,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Expose them",
+        "text": "Manipulate the situation to expose them",
         "nation": "PsycZ"
       }
     ]
@@ -103,7 +103,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "The wildcard",
+        "text": "The wildcard who questions everything",
         "nation": "PsycZ"
       }
     ]
@@ -129,7 +129,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Choose the riskiest path",
+        "text": "Choose the riskiest path just to see what happens",
         "nation": "PsycZ"
       }
     ]
@@ -155,7 +155,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Dismiss it",
+        "text": "Dismiss it if it doesn't match your inner truth",
         "nation": "PsycZ"
       }
     ]
@@ -181,7 +181,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Challenge perspectives",
+        "text": "Challenge ideas and bring fresh, bold perspectives",
         "nation": "PsycZ"
       }
     ]
@@ -207,7 +207,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Why offer the impossible",
+        "text": "Question why the task exists at all",
         "nation": "PsycZ"
       }
     ]
@@ -233,7 +233,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Speak truth",
+        "text": "Speak truth - even if it burns",
         "nation": "PsycZ"
       }
     ]
@@ -259,11 +259,11 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "What led to the crisis",
+        "text": "Expose the flaws that led to the crisis",
         "nation": "PsycZ"
       }
     ]
-   
+  },
   {
     "id": 11,
     "question": "Which environment do you thrive in?",
@@ -285,7 +285,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Chaotic",
+        "text": "Chaotic and thought-provoking",
         "nation": "PsycZ"
       }
     ]
@@ -311,7 +311,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Existence and identity",
+        "text": "Questions about existence and identity",
         "nation": "PsycZ"
       }
     ]
@@ -337,7 +337,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "mysteries",
+        "text": "Twisted psychological mysteries",
         "nation": "PsycZ"
       }
     ]
@@ -363,7 +363,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Not unless i know the deeper issue first",
+        "text": "Analyze the deeper issue first",
         "nation": "PsycZ"
       }
     ]
@@ -415,7 +415,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Creates disruption for his enemies",
+        "text": "Challenges norms and creates disruption",
         "nation": "PsycZ"
       }
     ]
@@ -467,7 +467,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "A cursed blade",
+        "text": "A cursed blade of unknown power",
         "nation": "PsycZ"
       }
     ]
@@ -519,7 +519,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "By Thriving in it",
+        "text": "Thrive in it and explore the unknown",
         "nation": "PsycZ"
       }
     ]
