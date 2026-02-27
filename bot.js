@@ -101,6 +101,14 @@ VOICE & AUDIO:
 - When in a voice channel, you listen to all speakers and log voice activity.
 - Never say you cannot send audio.
 
+VOICE AWARENESS (ALWAYS ACTIVE — NO PROMPTING REQUIRED):
+- You receive a [VOICE STATUS] block with EVERY message. It tells you who is currently in voice channels and summarizes recent calls.
+- You always know: who is in VC right now, who was in the last call, how long they were there, and what they said in text chat during/around the call.
+- You do NOT need to be asked about voice activity — proactively mention it when relevant (e.g. if someone just left a call, if you notice a call is ongoing, if you have transcripts available).
+- Audio transcripts from Whisper voice recognition are stored per-utterance in Firebase. If asked about what someone said in VC, retrieve and cite it.
+- Use !voicelogs to retrieve full audio log history for any user or the whole server.
+- Never claim you do not know who was in voice — this information is always present in your context.
+
 VISUAL RECOGNITION:
 - You can identify DBI Nation Z members in photos and images shared in Discord.
 - You analyze images using your vision capabilities and cross-reference against stored member visual profiles.
@@ -180,13 +188,71 @@ function buildLiveContext() {
   const timeStr = now.toLocaleTimeString("en-US", {
     hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "UTC", hour12: true
   });
+
+  /* ── Live voice channel status (from in-memory sessions) ── */
+  let voiceLines = [];
+  if (activeSessions.size > 0) {
+    for (const [, session] of activeSessions) {
+      const names = [...session.participants.values()].map(p => p.displayName);
+      const since = session.startTime
+        ? `since ${session.startTime.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "UTC", hour12: true })} UTC`
+        : "";
+      const nameStr = names.length > 0 ? names.join(", ") : "unknown participants";
+      voiceLines.push(`  ACTIVE — #${session.channelName}: ${nameStr} ${since}`);
+    }
+  } else {
+    voiceLines.push("  No one is currently in a voice channel");
+  }
+
   return (
     `[LIVE CONTEXT]\n` +
     `Date: ${dateStr}\n` +
     `Time: ${timeStr} UTC\n` +
     `Unix timestamp: ${Math.floor(now.getTime() / 1000)}\n` +
+    `[VOICE STATUS]\n` +
+    voiceLines.join("\n") + "\n" +
+    `[END VOICE STATUS]\n` +
     `[END LIVE CONTEXT]\n\n`
   );
+}
+
+/* ── Compact async voice awareness block (recent sessions) ── */
+async function buildVoiceAwarenessContext(guildId) {
+  if (!guildId) return "";
+  try {
+    const sessions = await getRecentVoiceSessions(guildId, 3);
+    if (!sessions || sessions.length === 0) return "";
+
+    const lines = ["[RECENT VOICE CALLS]\n"];
+    for (const s of sessions) {
+      const start = s.startTime?.toDate?.() ?? new Date(s.startTime);
+      const durationMins = s.duration ? `${Math.round(s.duration / 60)} min` : "ongoing";
+      const participants = Array.isArray(s.participants) ? s.participants : [];
+      const names = participants.map(p => p.displayName).join(", ") || "unknown";
+      const status = s.status === "active" ? "ACTIVE NOW" : "ended";
+
+      lines.push(`• #${s.channelName} [${status}] — ${start.toLocaleDateString("en-US", { month: "short", day: "numeric" })} — ${names} — ${durationMins}`);
+
+      /* include Gemini group insights if available */
+      if (s.insights?.groupDynamic) {
+        lines.push(`  Group: ${s.insights.groupDynamic}`);
+      }
+
+      /* include text messages from participants during the call */
+      const textLog = Array.isArray(s.textLog) ? s.textLog : [];
+      if (textLog.length > 0) {
+        lines.push(`  Chat during call (${textLog.length} msgs):`);
+        for (const entry of textLog.slice(0, 8)) {
+          lines.push(`    [${entry.displayName}]: ${entry.content}`);
+        }
+        if (textLog.length > 8) lines.push(`    ... +${textLog.length - 8} more`);
+      }
+    }
+    lines.push("[END RECENT VOICE CALLS]\n");
+    return lines.join("\n");
+  } catch (_) {
+    return "";
+  }
 }
 
 /* ────────────────────────────────────────────
@@ -468,7 +534,10 @@ async function getAthenaResponse(content, athenaUserId, discordUserId, channel, 
     ? `[KNOWLEDGE BASE — ${knowledgeEntries.length} entries]\n${knowledgeEntries.slice(0, 20).join("\n")}\n[END KNOWLEDGE BASE]\n\n`
     : "";
 
-  const fullMessage = liveContext + knowledgeBlock + serverContext + content;
+  /* Always include recent voice call awareness — no prompting needed */
+  const voiceAwareness = await buildVoiceAwarenessContext(effectiveGuildId);
+
+  const fullMessage = liveContext + knowledgeBlock + voiceAwareness + serverContext + content;
 
   let reply;
   try {
@@ -654,6 +723,135 @@ client.on(Events.MessageCreate, async message => {
     buildAllStyleProfiles()
       .then(result => message.reply(`Done — built ${result.built}/${result.total} profiles.`))
       .catch(err => message.reply(`Error: ${err.message}`));
+    return;
+  }
+
+  /* ── !voicelogs — retrieve full audio/voice call history ── */
+  if (message.content.startsWith("!voicelogs")) {
+    const isAdmin = ADMIN_IDS.includes(message.author.id) ||
+      message.member?.permissions?.has("Administrator");
+    if (!isAdmin) {
+      await message.reply("Admin only.");
+      return;
+    }
+
+    const parts = message.content.trim().split(/\s+/);
+    const subCmd = parts[1]?.toLowerCase();
+
+    /* !voicelogs sessions [n] — list recent voice sessions */
+    if (!subCmd || subCmd === "sessions") {
+      const limit = parseInt(parts[2]) || 5;
+      const guildId = message.guild?.id || primaryGuildId;
+      await message.reply(`Fetching last ${limit} voice session(s)...`);
+      const sessions = await getRecentVoiceSessions(guildId, limit).catch(() => []);
+      if (sessions.length === 0) {
+        await message.reply("No voice sessions found in Firestore yet. Sessions are created when members join voice channels.");
+        return;
+      }
+      const formatted = formatVoiceSessionsForContext(sessions);
+      /* split into 1900-char chunks */
+      const chunks = formatted.match(/[\s\S]{1,1900}/g) || [formatted];
+      for (const chunk of chunks) await message.channel.send(`\`\`\`\n${chunk}\n\`\`\``);
+      return;
+    }
+
+    /* !voicelogs fingerprints <userId|username> — fetch raw audio transcripts */
+    if (subCmd === "fingerprints" || subCmd === "audio") {
+      const target = parts.slice(2).join(" ");
+      if (!target) {
+        await message.reply("Usage: `!voicelogs fingerprints <discordId or username>`");
+        return;
+      }
+      await message.reply(`Fetching voice fingerprints for **${target}**...`);
+      try {
+        /* try as Discord ID first, then username lookup */
+        let fingerprintRef = null;
+        const asId = /^\d{17,20}$/.test(target) ? target : null;
+        if (asId) {
+          fingerprintRef = firestore.collection("voice_fingerprints").doc(asId);
+        } else {
+          /* search by username in fingerprints collection */
+          const snap = await firestore.collection("voice_fingerprints")
+            .where("username", "==", target)
+            .limit(1)
+            .get();
+          if (!snap.empty) fingerprintRef = snap.docs[0].ref;
+        }
+
+        if (!fingerprintRef) {
+          await message.reply(`No voice fingerprint found for **${target}**.`);
+          return;
+        }
+
+        const doc = await fingerprintRef.get();
+        if (!doc.exists) {
+          await message.reply(`No fingerprint document for **${target}**.`);
+          return;
+        }
+
+        const profile = doc.data();
+        const logsSnap = await fingerprintRef
+          .collection("audio_logs")
+          .orderBy("timestamp", "desc")
+          .limit(20)
+          .get();
+
+        if (logsSnap.empty) {
+          await message.reply(`Voice fingerprint exists for **${profile.displayName}** but no audio logs stored yet.`);
+          return;
+        }
+
+        const logLines = [`Voice audio logs for **${profile.displayName}** (last ${logsSnap.size}):\n`];
+        logsSnap.forEach(d => {
+          const l = d.data();
+          const ts = l.timestamp ? new Date(l.timestamp).toLocaleString() : "unknown time";
+          const dur = l.durationMs ? `${Math.round(l.durationMs / 1000)}s` : "?s";
+          const transcript = l.transcript || "(no transcript — OPENAI_API_KEY may be missing)";
+          const session = l.sessionId ? ` [session: ${l.sessionId.substring(0, 8)}...]` : "";
+          logLines.push(`• ${ts} (${dur})${session}: "${transcript}"`);
+        });
+
+        const output = logLines.join("\n");
+        const chunks = output.match(/[\s\S]{1,1900}/g) || [output];
+        for (const chunk of chunks) await message.channel.send(`\`\`\`\n${chunk}\n\`\`\``);
+      } catch (err) {
+        await message.reply(`Error fetching fingerprints: ${err.message}`);
+      }
+      return;
+    }
+
+    /* !voicelogs all — list all users with fingerprints */
+    if (subCmd === "all") {
+      await message.reply("Fetching all stored voice fingerprints...");
+      try {
+        const snap = await firestore.collection("voice_fingerprints").get();
+        if (snap.empty) {
+          await message.reply("No voice fingerprints stored yet.");
+          return;
+        }
+        const lines = [`Voice fingerprints stored (${snap.size} users):\n`];
+        snap.forEach(doc => {
+          const d = doc.data();
+          const samples = d.sampleCount || 0;
+          const total = d.totalDurationMs ? `${Math.round(d.totalDurationMs / 1000)}s` : "?";
+          const last = d.lastSeen ? new Date(d.lastSeen).toLocaleDateString() : "never";
+          lines.push(`• **${d.displayName || d.username}** (${d.discordId}) — ${samples} samples, ${total} total, last: ${last}`);
+        });
+        const output = lines.join("\n");
+        const chunks = output.match(/[\s\S]{1,1900}/g) || [output];
+        for (const chunk of chunks) await message.channel.send(chunk);
+      } catch (err) {
+        await message.reply(`Error: ${err.message}`);
+      }
+      return;
+    }
+
+    await message.reply(
+      "Usage:\n" +
+      "`!voicelogs` or `!voicelogs sessions [n]` — list recent voice sessions\n" +
+      "`!voicelogs fingerprints <userId or username>` — show audio transcripts for a user\n" +
+      "`!voicelogs all` — list all users with stored voice data"
+    );
     return;
   }
 
@@ -1023,6 +1221,54 @@ client.once(Events.ClientReady, async () => {
     backfillDiscordHistory(guild, { limitPerChannel: 1000 })
       .then(({ totalStored }) => console.log(`[Backfill] ${guild.name}: ${totalStored} historical messages stored`))
       .catch(err => console.error(`[Backfill] Error for ${guild.name}:`, err.message));
+  }
+
+  /* 6. Resume tracking for anyone already in voice channels when bot starts.
+        This handles the case where the bot restarts while a call is ongoing — the
+        VoiceStateUpdate events that fired before the bot was online are missed, so we
+        manually create sessions for any occupied voice channels. */
+  const { v4: uuidv4 } = await import("uuid");
+  for (const [, guild] of client.guilds.cache) {
+    for (const [, channel] of guild.channels.cache) {
+      if (channel.type !== ChannelType.GuildVoice) continue;
+      const humanMembers = [...channel.members.values()].filter(m => !m.user.bot);
+      if (humanMembers.length === 0) continue;
+      if (activeSessions.has(channel.id)) continue; /* already tracked */
+
+      const session = {
+        sessionId: uuidv4(),
+        guildId: guild.id,
+        guildName: guild.name,
+        channelId: channel.id,
+        channelName: channel.name,
+        startTime: new Date(),
+        participants: new Map(),
+        textLog: [],
+      };
+      activeSessions.set(channel.id, session);
+
+      startVoiceSession(session).catch(err =>
+        console.error("[VoiceBackfill] Start session error:", err.message)
+      );
+
+      for (const member of humanMembers) {
+        const athenaUserId = await getAthenaUserIdForDiscordId(member.user.id).catch(() => null);
+        session.participants.set(member.user.id, {
+          joinTime: Date.now(),
+          athenaUserId,
+          discordId: member.user.id,
+          displayName: member.user.globalName || member.user.username,
+          textMessages: [],
+        });
+        recordParticipantJoin(session.sessionId, {
+          athenaUserId,
+          discordId: member.user.id,
+          displayName: member.user.globalName || member.user.username,
+          joinTime: Date.now(),
+        }).catch(() => {});
+      }
+      console.log(`[VoiceBackfill] Resumed session for #${channel.name} — ${humanMembers.length} humans already present`);
+    }
   }
 });
 
