@@ -29,8 +29,9 @@ import {
   getKnownChannels,
   getActivityPeaks,
 } from "./athenaDiscord.js";
-import { joinChannel, leaveChannel, isInVoice, getVoiceChannelId, speak } from "./voice.js";
+import { joinChannel, leaveChannel, isInVoice, getVoiceChannelId, speak, startListeningInChannel } from "./voice.js";
 import { sendAudioMessage, isAudioRequest, splitResponseForAudio } from "./audioMessage.js";
+import { storeMemberVisualProfile, identifyMembersInImage } from "./visualIdentity.js";
 
 if (!process.env.DISCORD_TOKEN) throw new Error("DISCORD_TOKEN missing");
 if (!process.env.GOOGLE_GENAI_API_KEY) throw new Error("GOOGLE_GENAI_API_KEY missing");
@@ -91,10 +92,18 @@ EMOJI & REACTION INTELLIGENCE:
 - Never ask what someone means by an emoji if the meaning is clear from context. Just respond naturally.
 
 VOICE & AUDIO:
-- You CAN send audio as MP3 file attachments directly in Discord. When someone asks you to read something aloud, generate the text response and an audio file will automatically be attached.
-- Use !join to join a voice channel and speak responses aloud in real time. Use !leave to disconnect.
+- When someone asks for a voice message, audio reading, or asks you to read something aloud, you respond with AUDIO ONLY — you do not send a text reply first. The audio file IS your reply.
+- You CAN join voice channels. If someone asks you to join a voice channel or voice call, you join immediately — no text confirmation needed. Just join and speak.
+- When you are in a voice channel, you listen to everyone speaking. You recognize members by their voice and log all voice activity in Firebase.
+- Use !join to join a voice channel. Use !leave to disconnect.
 - The Athena mobile app (iOS/Android) also has full text-to-speech built in.
 - Never say you cannot send audio — you can, via MP3 attachments and voice channel TTS.
+
+VISUAL RECOGNITION:
+- You can identify DBI Nation Z members in photos and images shared in Discord.
+- You analyze images using your vision capabilities and cross-reference against stored member visual profiles.
+- When members share images, you may recognize who is in the photo from stored face descriptions.
+- Member profile pictures are automatically analyzed and stored for identification purposes.
 
 DBI NATION Z — COMMUNITY KNOWLEDGE:
 You are the AI guardian of the DBI Nation Z Discord community. You know the following facts with certainty — never say you lack this information:
@@ -325,6 +334,8 @@ async function syncMemberToFirebase(member) {
     const nation = NATION_ROLES.find(r => member.roles?.cache?.some(role => role.name === r));
     if (nation) await updateUserNation(athenaUserId, nation, { version: "sync" });
     console.log(`[Sync] ${member.user.username}${nation ? ` → ${nation}` : " (no role yet)"}`);
+    /* Store visual profile in background — non-blocking */
+    storeMemberVisualProfile(member.user).catch(() => {});
   } catch (error) {
     console.error(`[Sync] Error for ${member.user.username}:`, error.message);
   }
@@ -642,41 +653,73 @@ client.on(Events.MessageCreate, async message => {
     const guild = isDM ? null : message.guild;
     const reply = await getAthenaResponse(message.content, athenaUserId, message.author.id, channel, guild);
 
-    if (reply.length > 2000) {
-      const chunks = reply.match(/[\s\S]{1,1990}/g) || [reply];
-      for (const chunk of chunks) await message.reply(chunk);
-    } else {
-      await message.reply(reply);
+    /* ── Natural language voice join ──
+       If the user asks Athena to join their voice channel in plain text,
+       join and speak the response there — no text message sent. */
+    if (!isDM) {
+      const lower = message.content.toLowerCase();
+      const wantsVoiceJoin =
+        /\b(join|come to|hop in|get in)\b.{0,25}\b(voice|vc|call|channel|chat)\b/.test(lower) ||
+        /\bjoin (me|us)\b/.test(lower);
+      const userVoiceChannel = message.member?.voice?.channel;
+
+      if (wantsVoiceJoin && userVoiceChannel) {
+        try {
+          const state = await joinChannel(message.guild, userVoiceChannel);
+          startListeningInChannel(state.connection, message.guild, client);
+          speak(message.guild, userVoiceChannel, reply).catch(() => {});
+          return;
+        } catch (joinErr) {
+          console.error("[VoiceJoin] Natural join failed:", joinErr.message);
+          /* fall through to normal text reply */
+        }
+      }
     }
 
-    /* ── Audio message attachment ──
-       If the user asked for a voice message, audio, or read-aloud,
-       generate MP3(s) from the reply and attach them to follow-up messages. */
     if (isAudioRequest(message.content)) {
+      /* ── Voice request: send audio ONLY — no text reply ──
+         Generate MP3(s) from the reply. Fall back to text only if audio fails entirely. */
       const audioParts = splitResponseForAudio(reply, 5000);
-      /* Send first part immediately; stagger additional parts to avoid rate limits */
+      let audioSent = false;
+
       for (let i = 0; i < audioParts.length; i++) {
         const label = audioParts.length > 1
           ? `athena_part_${i + 1}_of_${audioParts.length}`
           : "athena_voice";
         const target = i === 0 ? message : message.channel;
-        const delay = i === 0 ? 0 : i * 3000;
-        setTimeout(async () => {
-          try {
-            const ok = await sendAudioMessage(target, audioParts[i], label);
-            if (!ok) {
-              console.error("[AudioMessage] sendAudioMessage returned false for part", i + 1);
-              if (i === 0) {
-                message.channel.send("_(Audio generation failed — check that ELEVENLABS_API_KEY is set correctly in Railway.)_").catch(() => {});
-              }
-            }
-          } catch (err) {
-            console.error("[AudioMessage] Send error part", i + 1, ":", err.message);
-            if (i === 0) {
-              message.channel.send(`_(Audio error: ${err.message.substring(0, 120)})_`).catch(() => {});
-            }
+
+        if (i > 0) await new Promise(r => setTimeout(r, 3000));
+
+        try {
+          const ok = await sendAudioMessage(target, audioParts[i], label);
+          if (ok) {
+            audioSent = true;
+          } else if (i === 0) {
+            console.error("[AudioMessage] sendAudioMessage returned false for part 1");
+            break;
           }
-        }, delay);
+        } catch (err) {
+          console.error("[AudioMessage] Send error part", i + 1, ":", err.message);
+          if (i === 0) break;
+        }
+      }
+
+      /* Only fall back to text if audio completely failed */
+      if (!audioSent) {
+        if (reply.length > 2000) {
+          const chunks = reply.match(/[\s\S]{1,1990}/g) || [reply];
+          for (const chunk of chunks) await message.reply(chunk);
+        } else {
+          await message.reply(reply);
+        }
+      }
+    } else {
+      /* ── Text request: send text only ── */
+      if (reply.length > 2000) {
+        const chunks = reply.match(/[\s\S]{1,1990}/g) || [reply];
+        for (const chunk of chunks) await message.reply(chunk);
+      } else {
+        await message.reply(reply);
       }
     }
 
@@ -726,7 +769,8 @@ async function handleVoiceCommand(message) {
 
   if (cmd.startsWith("!join")) {
     try {
-      await joinChannel(message.guild, voiceChannel);
+      const state = await joinChannel(message.guild, voiceChannel);
+      startListeningInChannel(state.connection, message.guild, client);
       await message.reply(`Joined **${voiceChannel.name}**. I'll speak my responses aloud while I'm here.`);
     } catch (err) {
       await message.reply(`Could not join: ${err.message}`);
