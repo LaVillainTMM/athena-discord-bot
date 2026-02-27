@@ -4,11 +4,18 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { admin, firestore } from "./firebase.js";
 import {
   getOrCreateAthenaUser,
+  getAthenaUserIdForDiscordId,
   updateUserNation,
   recordActivity,
   mergeDiscordAccounts,
   forceCreateAndLinkDiscordIds,
 } from "./athenaUser.js";
+import {
+  getOrCreateVoiceProfile,
+  startVoiceSession,
+  recordParticipantJoin,
+  finalizeVoiceSession,
+} from "./voiceRecognition.js";
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
 import { getKnowledgeBase, startKnowledgeLearning } from "./knowledgeAPI.js";
@@ -29,6 +36,12 @@ const NATION_ROLES = ["SleeperZ", "ESpireZ", "BoroZ", "PsycZ"];
 
 /* Primary guild ID — set on ready, used for DM history queries */
 let primaryGuildId = process.env.PRIMARY_GUILD_ID || null;
+
+/* ── Voice session tracking (in-memory)
+   channelId → { sessionId, guildId, guildName, channelId, channelName,
+                 startTime, participants: Map<discordId, participant> }
+── */
+const activeSessions = new Map();
 
 /* Admin Discord IDs allowed to run !linkaccounts */
 const ADMIN_IDS = (process.env.ADMIN_DISCORD_IDS || "").split(",").map(s => s.trim()).filter(Boolean);
@@ -667,6 +680,88 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
       }).catch(() => {});
     } catch (err) {
       console.error("[Reaction] Error handling reaction:", err.message);
+    }
+  }
+});
+
+/* ──────────────────────────────────────────────────────
+   VOICE STATE UPDATE — Track all voice call activity
+   Fires whenever anyone joins/leaves/moves voice channels.
+   Builds real-time voice sessions and writes them to
+   Firebase voice_profiles and voice_sessions collections.
+────────────────────────────────────────────────────── */
+client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
+  const user = newState.member?.user || oldState.member?.user;
+  if (!user || user.bot) return;
+
+  const leftChannelId  = oldState.channelId;
+  const joinedChannelId = newState.channelId;
+  const guild = newState.guild || oldState.guild;
+
+  /* ── USER LEFT a channel ── */
+  if (leftChannelId && leftChannelId !== joinedChannelId) {
+    const session = activeSessions.get(leftChannelId);
+    if (session && session.participants.has(user.id)) {
+      const p = session.participants.get(user.id);
+      session.participants.delete(user.id);
+
+      /* If the channel is now empty, close out the session */
+      if (session.participants.size === 0) {
+        activeSessions.delete(leftChannelId);
+        finalizeVoiceSession(session).catch(err =>
+          console.error("[VoiceTracking] Finalize error:", err.message)
+        );
+      }
+    }
+  }
+
+  /* ── USER JOINED a channel ── */
+  if (joinedChannelId && joinedChannelId !== leftChannelId) {
+    const channel = newState.channel;
+
+    /* Start a new session if this channel has none */
+    let session = activeSessions.get(joinedChannelId);
+    if (!session) {
+      const { v4: uuidv4 } = await import("uuid");
+      session = {
+        sessionId: uuidv4(),
+        guildId: guild.id,
+        guildName: guild.name,
+        channelId: joinedChannelId,
+        channelName: channel?.name || joinedChannelId,
+        startTime: new Date(),
+        participants: new Map(),
+      };
+      activeSessions.set(joinedChannelId, session);
+      startVoiceSession(session).catch(err =>
+        console.error("[VoiceTracking] Start session error:", err.message)
+      );
+    }
+
+    /* Resolve Athena user ID (null if they've never messaged Athena) */
+    const athenaUserId = await getAthenaUserIdForDiscordId(user.id).catch(() => null);
+
+    /* Add participant to in-memory session */
+    session.participants.set(user.id, {
+      joinTime: Date.now(),
+      athenaUserId,
+      discordId: user.id,
+      displayName: user.globalName || user.username,
+    });
+
+    /* Record join in Firebase */
+    recordParticipantJoin(session.sessionId, {
+      athenaUserId,
+      discordId: user.id,
+      displayName: user.globalName || user.username,
+      joinTime: Date.now(),
+    }).catch(() => {});
+
+    /* Ensure voice recognition profile exists for this user */
+    if (athenaUserId) {
+      getOrCreateVoiceProfile(athenaUserId, user).catch(err =>
+        console.error("[VoiceTracking] Profile create error:", err.message)
+      );
     }
   }
 });
