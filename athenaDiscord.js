@@ -391,6 +391,118 @@ export async function getKnownChannels(guildId) {
 }
 
 /* ────────────────────────────────────────────
+   GET ACTIVITY PEAKS
+   Finds the most active time periods in the server.
+   Groups messages by day, ranks by message count,
+   and returns peak days with sample messages.
+──────────────────────────────────────────── */
+export async function getActivityPeaks({
+  guildId = null,
+  channelName = null,
+  daysBack = 90,
+  topDays = 5,
+} = {}) {
+  try {
+    const cutoffTs = Date.now() - daysBack * 24 * 60 * 60 * 1000;
+
+    let query = firestore.collection("messages")
+      .where("platform", "==", "discord");
+
+    if (channelName) {
+      query = query.where("channel_name", "==", channelName);
+    } else if (guildId) {
+      query = query.where("guild_id", "==", guildId);
+    }
+
+    const snap = await query.limit(5000).get();
+    if (snap.empty) return "";
+
+    /* group messages by day */
+    const byDay = {};
+    const byChannel = {};
+
+    snap.docs.forEach(d => {
+      const data = d.data();
+      const ts = data.discord_created_ts || (data.discord_created_at ? new Date(data.discord_created_at).getTime() : null);
+      if (!ts || ts < cutoffTs || !data.content?.trim()) return;
+
+      const date = new Date(ts).toLocaleDateString("en-US", {
+        weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "UTC"
+      });
+      const dayKey = new Date(ts).toISOString().slice(0, 10); /* YYYY-MM-DD */
+
+      if (!byDay[dayKey]) byDay[dayKey] = { label: date, count: 0, messages: [], channels: {} };
+      byDay[dayKey].count++;
+      byDay[dayKey].messages.push(data);
+
+      const ch = data.thread_name
+        ? `${data.channel_name}/${data.thread_name}`
+        : (data.channel_name || "unknown");
+      byDay[dayKey].channels[ch] = (byDay[dayKey].channels[ch] || 0) + 1;
+
+      /* overall channel totals */
+      byChannel[ch] = (byChannel[ch] || 0) + 1;
+    });
+
+    if (Object.keys(byDay).length === 0) return "";
+
+    /* sort days by message count, take top N */
+    const ranked = Object.entries(byDay)
+      .sort((a, b) => b[1].count - a[1].count)
+      .slice(0, topDays);
+
+    /* overall most active channels */
+    const topChannels = Object.entries(byChannel)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([ch, count]) => `#${ch} (${count} messages)`);
+
+    /* format output */
+    let out = `[ACTIVITY ANALYSIS — last ${daysBack} days]\n`;
+    out += `Total messages analyzed: ${snap.docs.length}\n`;
+    out += `Most active channels overall: ${topChannels.join(", ")}\n\n`;
+
+    out += `TOP ${ranked.length} MOST ACTIVE DAYS:\n`;
+    ranked.forEach(([dayKey, info], i) => {
+      const topChs = Object.entries(info.channels)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 4)
+        .map(([ch, n]) => `#${ch}(${n})`)
+        .join(", ");
+      out += `${i + 1}. ${info.label} — ${info.count} messages | Active in: ${topChs}\n`;
+
+      /* include 10 sample messages from the peak day */
+      const samples = info.messages
+        .sort((a, b) => {
+          const tsA = a.discord_created_ts || new Date(a.discord_created_at).getTime();
+          const tsB = b.discord_created_ts || new Date(b.discord_created_at).getTime();
+          return tsA - tsB;
+        })
+        .slice(0, 10);
+
+      if (i === 0) {
+        out += `   Sample messages from peak day:\n`;
+        samples.forEach(m => {
+          const ts = m.discord_created_ts ? new Date(m.discord_created_ts) : new Date(m.discord_created_at);
+          const time = ts.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "UTC", hour12: true });
+          const loc = m.thread_name ? `#${m.channel_name}/${m.thread_name}` : `#${m.channel_name || "?"}`;
+          const author = m.global_name || m.username || "Unknown";
+          out += `   [${time}] [${loc}] ${author}: ${m.content}\n`;
+        });
+      }
+      out += "\n";
+    });
+
+    out += `[END ACTIVITY ANALYSIS]\n\n`;
+    console.log(`[ActivityPeaks] Analyzed ${snap.docs.length} messages, found ${ranked.length} peak days`);
+    return out;
+  } catch (err) {
+    console.error("[ActivityPeaks] Error:", err.message);
+    return "";
+  }
+}
+
+/* ────────────────────────────────────────────
    RESOLVE ATHENA USER IDs FOR EXISTING MESSAGES
 ──────────────────────────────────────────── */
 export async function backfillExistingMessages() {

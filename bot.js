@@ -17,12 +17,16 @@ import {
   getRecentChannelContext,
   buildServerContext,
   getKnownChannels,
+  getActivityPeaks,
 } from "./athenaDiscord.js";
 
 if (!process.env.DISCORD_TOKEN) throw new Error("DISCORD_TOKEN missing");
 if (!process.env.GOOGLE_GENAI_API_KEY) throw new Error("GOOGLE_GENAI_API_KEY missing");
 
 const NATION_ROLES = ["SleeperZ", "ESpireZ", "BoroZ", "PsycZ"];
+
+/* Primary guild ID — set on ready, used for DM history queries */
+let primaryGuildId = process.env.PRIMARY_GUILD_ID || null;
 
 /* Admin Discord IDs allowed to run !linkaccounts */
 const ADMIN_IDS = (process.env.ADMIN_DISCORD_IDS || "").split(",").map(s => s.trim()).filter(Boolean);
@@ -117,55 +121,70 @@ function parseHistoryRequest(content, knownChannelData = {}) {
   const knownChannels = knownChannelData.channels || [];
   const knownThreads  = knownChannelData.threads  || [];
 
+  /* ── activity-level queries (busiest periods) ── */
+  const activityKeywords = [
+    "most active", "busiest", "peak activity", "most messages",
+    "most activity", "most traffic", "how active", "discord activity",
+    "server activity", "server traffic", "active day", "active period",
+    "active time", "most people", "most engagement",
+  ];
+  const isActivityRequest = activityKeywords.some(kw => lower.includes(kw));
+
+  /* ── general history / content queries ── */
   const historyKeywords = [
+    /* time references */
     "last week", "past week", "this week",
     "yesterday", "last night", "last few days", "past few days",
-    "last month", "past month",
-    "last 3 days", "past 3 days", "last 2 days",
+    "last month", "past month", "last 3 days", "past 3 days", "last 2 days",
+    /* question phrases */
     "what happened", "what was talked", "what was said", "what did people say",
     "what has been said", "what have people been", "what's been happening",
-    "what has been happening", "catch me up", "catch up",
-    "summarize", "summary", "recap", "what was discussed",
-    "chat history", "conversation history", "what did people talk",
-    "fill me in", "what went on", "read the", "read me", "tell me what",
+    "what has been happening", "what is going on", "what's going on",
+    "what was being discussed", "what was being talked", "what are people talking",
+    "what are people saying", "what was discussed", "what did people talk",
+    "what went on", "what's been said", "what has been discussed",
+    "being discussed", "being talked about", "being said",
+    "everyone talking about", "people talking about",
+    /* request phrases */
+    "catch me up", "catch up", "fill me in",
+    "summarize", "summary", "recap", "overview",
+    "chat history", "conversation history",
+    "tell me what", "tell me about", "read the", "read me",
+    "has been said", "has been discussed", "has been happening",
   ];
 
-  const isHistoryRequest = historyKeywords.some(kw => lower.includes(kw));
+  const isHistoryRequest = isActivityRequest || historyKeywords.some(kw => lower.includes(kw));
   if (!isHistoryRequest) return null;
 
-  /* extract time range */
-  let daysBack = 7;
-  if      (lower.includes("last month")  || lower.includes("past month"))  daysBack = 30;
+  /* ── extract time range ── */
+  let daysBack = isActivityRequest ? 90 : 7; /* broader window for activity analysis */
+  if      (lower.includes("all time") || lower.includes("ever"))             daysBack = 365;
+  else if (lower.includes("last month")  || lower.includes("past month"))    daysBack = 30;
   else if (lower.includes("last week")   || lower.includes("past week") || lower.includes("this week")) daysBack = 7;
-  else if (lower.includes("last 3 days") || lower.includes("past 3 days")) daysBack = 3;
-  else if (lower.includes("last 2 days"))  daysBack = 2;
-  else if (lower.includes("yesterday")   || lower.includes("last night"))   daysBack = 2;
+  else if (lower.includes("last 3 days") || lower.includes("past 3 days"))   daysBack = 3;
+  else if (lower.includes("last 2 days"))                                     daysBack = 2;
+  else if (lower.includes("yesterday")   || lower.includes("last night"))    daysBack = 2;
   else if (lower.includes("today")       || lower.includes("last few hours")) daysBack = 1;
 
   /* ── extract location ── */
   let channelName = null;
   let threadName  = null;
 
-  /* explicit #channel or #channel/thread syntax */
   const hashMatch = content.match(/#([\w-]+)(?:\/([\w-]+))?/);
   if (hashMatch) {
     channelName = hashMatch[1].toLowerCase();
     if (hashMatch[2]) threadName = hashMatch[2].toLowerCase();
   } else {
-    /* "in <Name>" / "the <Name> channel/chat/forum/thread" */
     const phraseMatch = content.match(
       /(?:in|from|for)\s+(?:the\s+)?([A-Za-z][\w\s]{1,30}?)(?:\s+channel|\s+chat|\s+room|\s+forum|\s+thread|\s+server)?\s*(?:for|from|over|this|last|past|\?|$)/i
     );
     if (phraseMatch) {
       const candidate = phraseMatch[1].trim().toLowerCase().replace(/\s+/g, "-");
-
-      /* check threads first (more specific) */
       const exactThread   = knownThreads.find(t => t === candidate);
       const partialThread = knownThreads.find(t => t.includes(candidate) || candidate.includes(t));
       if (exactThread || partialThread) {
         threadName = exactThread || partialThread;
       } else {
-        /* then channels */
         const exactChan   = knownChannels.find(c => c === candidate);
         const partialChan = knownChannels.find(c => c.includes(candidate) || candidate.includes(c));
         channelName = exactChan || partialChan || candidate;
@@ -173,7 +192,7 @@ function parseHistoryRequest(content, knownChannelData = {}) {
     }
   }
 
-  return { isHistoryRequest: true, channelName, threadName, daysBack };
+  return { isHistoryRequest: true, isActivityRequest, channelName, threadName, daysBack };
 }
 
 /* ---------------- DISCORD CLIENT ---------------- */
@@ -268,10 +287,11 @@ async function getAthenaResponse(content, athenaUserId, discordUserId, channel, 
   console.log(`[Athena] Processing message from ${athenaUserId}: "${content.substring(0, 50)}..."`);
 
   /* detect if this is a history/summary request before fetching context */
-  const guildId = guild?.id || null;
+  /* use guild from message, or fall back to primary guild (for DMs) */
+  const effectiveGuildId = guild?.id || primaryGuildId;
   let knownChannelData = { channels: [], threads: [], all: [] };
-  if (guildId) {
-    knownChannelData = await getKnownChannels(guildId).catch(() => ({ channels: [], threads: [], all: [] }));
+  if (effectiveGuildId) {
+    knownChannelData = await getKnownChannels(effectiveGuildId).catch(() => ({ channels: [], threads: [], all: [] }));
   }
   const historyRequest = parseHistoryRequest(content, knownChannelData);
 
@@ -284,23 +304,34 @@ async function getAthenaResponse(content, athenaUserId, discordUserId, channel, 
   const historyEntries   = history.status === "fulfilled"   ? history.value   : [];
 
   /* build server context:
-     - history request → query Firebase for the relevant channel + time range
-     - normal message  → get last 30 live messages from current channel */
+     - activity request → getActivityPeaks (counts + peak period messages)
+     - history request  → buildServerContext (messages from channel/time range)
+     - normal message   → getRecentChannelContext (live last 30 msgs) */
   let serverContext = "";
-  if (historyRequest) {
+  if (historyRequest?.isActivityRequest) {
+    console.log(`[Athena] Activity analysis request — days=${historyRequest.daysBack}`);
+    serverContext = await getActivityPeaks({
+      guildId: effectiveGuildId,
+      channelName: historyRequest.channelName,
+      daysBack: historyRequest.daysBack,
+    }).catch(() => "");
+    if (!serverContext) {
+      serverContext = `[NOTE: No activity data stored yet. The backfill may still be running in the background.]\n\n`;
+    }
+  } else if (historyRequest) {
     console.log(`[Athena] History request — channel="${historyRequest.channelName}" thread="${historyRequest.threadName}" days=${historyRequest.daysBack}`);
     serverContext = await buildServerContext({
       channelName: historyRequest.channelName,
       threadName:  historyRequest.threadName,
-      guildId,
+      guildId: effectiveGuildId,
       daysBack: historyRequest.daysBack,
       limit: 200,
     });
-    /* fallback 1: drop channel filter, try server-wide */
+    /* fallback 1: drop channel/thread filter, try server-wide */
     if (!serverContext && (historyRequest.channelName || historyRequest.threadName)) {
-      serverContext = await buildServerContext({ guildId, daysBack: historyRequest.daysBack, limit: 200 });
+      serverContext = await buildServerContext({ guildId: effectiveGuildId, daysBack: historyRequest.daysBack, limit: 200 });
     }
-    /* fallback 2: tell Athena why there's no data */
+    /* fallback 2: tell Athena honestly */
     if (!serverContext) {
       serverContext = `[NOTE: No stored messages found for that scope yet. The backfill may still be running.]\n\n`;
     }
@@ -459,6 +490,12 @@ client.on(Events.MessageCreate, async message => {
 /* ---------------- READY ---------------- */
 client.once(Events.ClientReady, async () => {
   console.log(`[Athena] Online as ${client.user.tag}`);
+
+  /* store primary guild ID so DM history queries work */
+  if (!primaryGuildId && client.guilds.cache.size > 0) {
+    primaryGuildId = client.guilds.cache.first().id;
+    console.log(`[Athena] Primary guild: ${client.guilds.cache.first().name} (${primaryGuildId})`);
+  }
 
   /* 1. Sync existing member roles → full contact cards */
   for (const [, guild] of client.guilds.cache) {
