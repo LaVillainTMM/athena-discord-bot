@@ -1,45 +1,58 @@
 import { writeFile, unlink } from "fs/promises";
 import { AttachmentBuilder } from "discord.js";
-import { ElevenLabsClient } from "elevenlabs";
 
-/* ── ElevenLabs voice config ── */
-const ELEVENLABS_VOICE_ID = "z1rEShu1SmowIOAmbHl1"; /* Lily — British female, velvety actress */
-const ELEVENLABS_MODEL = "eleven_multilingual_v2";
+/* ── Azure TTS voice config ──
+   en-GB-SoniaNeural  — natural RP British female (primary)
+   en-GB-LibbyNeural  — younger, clearer RP female (alternative)
+── */
+const AZURE_VOICE        = "en-GB-SoniaNeural";
+const AZURE_OUTPUT_FORMAT = "audio-24khz-160kbitrate-mono-mp3";
 
-/* ── Voice settings — natural, human-like pacing with UK character ── */
-const VOICE_SETTINGS = {
-  stability: 0.42,
-  similarityBoost: 0.80,
-  style: 0.38,
-  useSpeakerBoost: true,
-};
-
-/* ── Generate MP3 via ElevenLabs SDK ── */
-async function generateWithElevenLabs(text, filepath) {
-  const elevenlabs = new ElevenLabsClient({
-    apiKey: process.env.ELEVENLABS_API_KEY,
-  });
-
-  const audioStream = await elevenlabs.textToSpeech.convert(ELEVENLABS_VOICE_ID, {
-    text,
-    modelId: ELEVENLABS_MODEL,
-    outputFormat: "mp3_44100_128",
-    voiceSettings: VOICE_SETTINGS,
-  });
-
-  /* Collect the ReadableStream chunks into a Buffer and write to disk */
-  const chunks = [];
-  const reader = audioStream.getReader();
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-  }
-
-  await writeFile(filepath, Buffer.concat(chunks));
+/* ── Escape text for SSML ── */
+function escapeXml(text) {
+  return text
+    .replace(/&/g,  "&amp;")
+    .replace(/</g,  "&lt;")
+    .replace(/>/g,  "&gt;")
+    .replace(/"/g,  "&quot;")
+    .replace(/'/g,  "&apos;");
 }
 
-/* ── Fallback: node-gtts (used only if ElevenLabs key is not set) ── */
+/* ── Generate MP3 via Azure TTS REST API ── */
+async function generateWithAzure(text, filepath) {
+  const key    = process.env.AZURE_SPEECH_KEY;
+  const region = process.env.AZURE_SPEECH_REGION || "eastus";
+
+  const ssml = `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-GB'>
+  <voice name='${AZURE_VOICE}'>
+    <prosody rate='-5%' pitch='+2%'>${escapeXml(text)}</prosody>
+  </voice>
+</speak>`;
+
+  const response = await fetch(
+    `https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`,
+    {
+      method: "POST",
+      headers: {
+        "Ocp-Apim-Subscription-Key": key,
+        "Content-Type":              "application/ssml+xml",
+        "X-Microsoft-OutputFormat":  AZURE_OUTPUT_FORMAT,
+        "User-Agent":                "AthenaBot",
+      },
+      body: ssml,
+    }
+  );
+
+  if (!response.ok) {
+    const err = await response.text().catch(() => "");
+    throw new Error(`Azure TTS ${response.status}: ${err.substring(0, 200)}`);
+  }
+
+  const buffer = await response.arrayBuffer();
+  await writeFile(filepath, Buffer.from(buffer));
+}
+
+/* ── Fallback: node-gtts (used only if Azure keys are not configured) ── */
 async function generateWithGtts(text, filepath) {
   const { default: gtts } = await import("node-gtts");
   const { createWriteStream } = await import("fs");
@@ -109,17 +122,17 @@ export async function sendAudioMessage(channel, text, label = "athena_voice") {
   const filepath = `/tmp/${safeName}_${Date.now()}.mp3`;
 
   try {
-    if (process.env.ELEVENLABS_API_KEY) {
-      console.log("[AudioMessage] Using ElevenLabs SDK (Lily)");
+    if (process.env.AZURE_SPEECH_KEY) {
+      console.log(`[AudioMessage] Using Azure TTS (${AZURE_VOICE})`);
       try {
-        await generateWithElevenLabs(audioText, filepath);
-      } catch (elevenErr) {
-        console.error("[AudioMessage] ElevenLabs failed:", elevenErr.message);
+        await generateWithAzure(audioText, filepath);
+      } catch (azureErr) {
+        console.error("[AudioMessage] Azure TTS failed:", azureErr.message);
         cleanup(filepath);
-        return { ok: false, error: `ElevenLabs error — ${elevenErr.message}` };
+        return { ok: false, error: `Azure TTS error — ${azureErr.message}` };
       }
     } else {
-      console.warn("[AudioMessage] ELEVENLABS_API_KEY not set — using Google TTS (not Lily)");
+      console.warn("[AudioMessage] AZURE_SPEECH_KEY not set — using Google TTS fallback");
       await generateWithGtts(audioText, filepath);
     }
 
