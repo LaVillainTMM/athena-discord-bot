@@ -25,7 +25,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Push boundaries and provoke reactions",
+        "text": "Provoke reactions",
         "nation": "PsycZ"
       }
     ]
@@ -51,7 +51,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Challenging the norm and embracing darkness",
+        "text": "Embrace the darkness",
         "nation": "PsycZ"
       }
     ]
@@ -77,7 +77,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Manipulate the situation to expose them",
+        "text": "Expose them",
         "nation": "PsycZ"
       }
     ]
@@ -103,7 +103,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "The wildcard who questions everything",
+        "text": "The wildcard",
         "nation": "PsycZ"
       }
     ]
@@ -129,7 +129,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Choose the riskiest path just to see what happens",
+        "text": "The riskiest path",
         "nation": "PsycZ"
       }
     ]
@@ -155,7 +155,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Dismiss it if it doesn't match your inner truth",
+        "text": "Dismiss it",
         "nation": "PsycZ"
       }
     ]
@@ -181,7 +181,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Challenge ideas and bring fresh, bold perspectives",
+        "text": "Challenge ideas",
         "nation": "PsycZ"
       }
     ]
@@ -207,7 +207,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Question why the task exists at all",
+        "text": "Why give me something, already deemed impossible",
         "nation": "PsycZ"
       }
     ]
@@ -233,7 +233,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Speak truth - even if it burns",
+        "text": "always Speak the truth",
         "nation": "PsycZ"
       }
     ]
@@ -259,7 +259,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Expose the flaws that led to the crisis",
+        "text": "Find out what led to the crisis",
         "nation": "PsycZ"
       }
     ]
@@ -285,7 +285,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Chaotic and thought-provoking",
+        "text": "Chaotic",
         "nation": "PsycZ"
       }
     ]
@@ -311,7 +311,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Questions about existence and identity",
+        "text": "Existence and identity",
         "nation": "PsycZ"
       }
     ]
@@ -337,7 +337,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Twisted psychological mysteries",
+        "text": "All types of Mysteries",
         "nation": "PsycZ"
       }
     ]
@@ -363,7 +363,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Analyze the deeper issue first",
+        "text": "Look for the deeper meaning of them failing",
         "nation": "PsycZ"
       }
     ]
@@ -389,7 +389,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Paradox, emotion, and chaos",
+        "text": "Paradox",
         "nation": "PsycZ"
       }
     ]
@@ -415,7 +415,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Challenges norms and creates disruption",
+        "text": "Creates disruption for their enemies",
         "nation": "PsycZ"
       }
     ]
@@ -467,7 +467,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "A cursed blade of unknown power",
+        "text": "A cursed blade",
         "nation": "PsycZ"
       }
     ]
@@ -519,7 +519,7 @@ export const quizQuestions = [
       },
       {
         "label": "D",
-        "text": "Thrive in it and explore the unknown",
+        "text": "Thrive in it",
         "nation": "PsycZ"
       }
     ]
