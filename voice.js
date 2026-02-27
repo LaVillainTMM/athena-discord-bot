@@ -16,7 +16,7 @@ const voiceConnections = new Map();
 
 /* ── ElevenLabs config (mirrors audioMessage.js) ── */
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-const ELEVENLABS_VOICE_ID = "jB2lPb5DhAX6l1TLkKXy";
+const ELEVENLABS_VOICE_ID = "pFZP5JQG7iQjIQuC4Bku"; /* Lily — British female, velvety actress */
 const ELEVENLABS_MODEL = "eleven_multilingual_v2";
 const VOICE_SETTINGS = {
   stability: 0.42,
