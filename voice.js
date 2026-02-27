@@ -8,7 +8,8 @@ import {
   entersState,
   EndBehaviorType,
 } from "@discordjs/voice";
-import { OpusEncoder } from "@discordjs/opus";
+import opusPkg from "@discordjs/opus";
+const { OpusEncoder } = opusPkg;
 import { createWriteStream, unlink, writeFileSync } from "fs";
 import { execFile } from "child_process";
 import https from "https";
