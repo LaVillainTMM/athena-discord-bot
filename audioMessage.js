@@ -162,9 +162,24 @@ export async function sendAudioMessage(channel, text, label = "athena_voice") {
    response — used to decide whether to attach an MP3.
 ────────────────────────────────────────────────────── */
 export function isAudioRequest(content) {
-  return /\b(voice\s*message|voice\s*memo|read\s*(me|it|aloud|out\s*loud|this)|send\s*(me\s*)?(an?\s*)?(audio|voice|mp3)|audio\s*(version|of|message|clip)|narrate|speak\s*(it|this|me|to\s*me|out)|listen\s*to|as\s*audio|in\s*audio)\b/i.test(
-    content
-  );
+  const lower = content.toLowerCase();
+
+  /* Explicit audio/voice keywords */
+  if (/\b(voice\s*message|voice\s*memo|send\s*(me\s*)?(an?\s*)?(audio|voice|mp3)|audio\s*(version|of|message|clip)|narrate|listen\s*to|as\s*audio|in\s*audio|recite|read\s*aloud|read\s*out\s*loud)\b/.test(lower)) return true;
+
+  /* "read me X" / "read it" / "read this" */
+  if (/\bread\s*(me|it|this)\b/.test(lower)) return true;
+
+  /* "read X for me" or "read X to me" — most natural phrasing */
+  if (/\bread\b.{0,60}\b(for|to)\s+me\b/.test(lower)) return true;
+
+  /* "speak it/this/to me/out" */
+  if (/\bspeak\s*(it|this|out|to\s*me)\b/.test(lower)) return true;
+
+  /* "read the/a <content type>" — read the preface, read the passage, etc. */
+  if (/\bread\s+(?:the|a|an)\s+\w/.test(lower)) return true;
+
+  return false;
 }
 
 /* ──────────────────────────────────────────────────────
