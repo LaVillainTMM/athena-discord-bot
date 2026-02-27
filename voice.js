@@ -6,10 +6,15 @@ import {
   VoiceConnectionStatus,
   StreamType,
   entersState,
+  EndBehaviorType,
 } from "@discordjs/voice";
-import { createWriteStream, unlink } from "fs";
+import { OpusEncoder } from "@discordjs/opus";
+import { createWriteStream, unlink, writeFileSync } from "fs";
+import { execFile } from "child_process";
 import https from "https";
 import { PassThrough } from "stream";
+import ffmpegPath from "ffmpeg-static";
+import { admin, firestore } from "./firebase.js";
 
 /* Map of guildId → { connection, player, channelId } */
 const voiceConnections = new Map();
@@ -206,4 +211,217 @@ export async function speak(guild, voiceChannel, text) {
     console.error("[Voice] speak() failed:", err.message);
     return false;
   }
+}
+
+/* ──────────────────────────────────────────────────────
+   VOICE LISTENING — listen to users speaking in a voice
+   channel, transcribe their audio, store voice logs and
+   fingerprints in Firebase for identity confirmation.
+────────────────────────────────────────────────────── */
+
+/* Tracks users currently being recorded per guild — prevents duplicate subscriptions */
+const activeRecordings = new Map(); /* guildId_userId → true */
+
+/* Transcribe an MP3 file using OpenAI Whisper */
+async function transcribeWithWhisper(mp3FilePath) {
+  const openAiKey = process.env.OPENAI_API_KEY;
+  if (!openAiKey) return null;
+
+  try {
+    const { readFileSync } = await import("fs");
+    const audioBytes = readFileSync(mp3FilePath);
+    const audioBlob = new Blob([audioBytes], { type: "audio/mpeg" });
+
+    const form = new FormData();
+    form.set("file", audioBlob, "audio.mp3");
+    form.set("model", "whisper-1");
+    form.set("language", "en");
+
+    const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${openAiKey}` },
+      body: form,
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error(`[VoiceListen] Whisper error ${res.status}:`, errText.substring(0, 150));
+      return null;
+    }
+
+    const data = await res.json();
+    return data.text?.trim() || null;
+  } catch (err) {
+    console.error("[VoiceListen] Whisper transcription failed:", err.message);
+    return null;
+  }
+}
+
+/* Convert raw PCM buffer → MP3 file via ffmpeg */
+function pcmToMp3(pcmBuffer, outputPath) {
+  return new Promise((resolve, reject) => {
+    const inputPath = outputPath.replace(".mp3", ".pcm");
+    writeFileSync(inputPath, pcmBuffer);
+
+    execFile(
+      ffmpegPath,
+      [
+        "-y",
+        "-f", "s16le",
+        "-ar", "48000",
+        "-ac", "2",
+        "-i", inputPath,
+        "-acodec", "libmp3lame",
+        "-b:a", "64k",
+        outputPath,
+      ],
+      (err) => {
+        unlink(inputPath, () => {});
+        if (err) reject(err);
+        else resolve();
+      }
+    );
+  });
+}
+
+/* Store a voice log entry + update voice fingerprint in Firebase */
+async function storeVoiceLog(userId, user, guild, { durationMs, transcript, sampleSizeBytes }) {
+  try {
+    const fingerprintRef = firestore
+      .collection("voice_fingerprints")
+      .doc(userId);
+
+    const logEntry = {
+      discordId: userId,
+      username: user.username,
+      displayName: user.globalName || user.username,
+      guildId: guild.id,
+      guildName: guild.name,
+      timestamp: new Date().toISOString(),
+      durationMs,
+      sampleSizeBytes,
+      transcript: transcript || null,
+    };
+
+    /* Add this sample to the audio_logs subcollection */
+    await fingerprintRef
+      .collection("audio_logs")
+      .add(logEntry);
+
+    /* Update (or create) the fingerprint document with latest metadata */
+    await fingerprintRef.set(
+      {
+        discordId: userId,
+        username: user.username,
+        displayName: user.globalName || user.username,
+        avatarUrl: user.displayAvatarURL?.({ size: 256 }) ?? null,
+        lastSeen: new Date().toISOString(),
+        sampleCount: admin.firestore.FieldValue.increment(1),
+        totalDurationMs: admin.firestore.FieldValue.increment(durationMs),
+        guilds: { [guild.id]: guild.name },
+        lastTranscript: transcript || null,
+      },
+      { merge: true }
+    );
+
+    console.log(`[VoiceListen] Stored voice log for ${user.username}: "${transcript || "no transcript"}" (${durationMs}ms)`);
+  } catch (err) {
+    console.error("[VoiceListen] storeVoiceLog error:", err.message);
+  }
+}
+
+/* Process a captured Opus audio chunk array for one user utterance */
+async function processVoiceSample(userId, user, guild, opusChunks, durationMs) {
+  if (opusChunks.length === 0) return;
+
+  const ts = Date.now();
+  const mp3Path = `/tmp/voice_${userId}_${ts}.mp3`;
+
+  try {
+    /* Decode Opus packets → raw PCM using @discordjs/opus */
+    const encoder = new OpusEncoder(48000, 2);
+    const pcmChunks = [];
+    for (const packet of opusChunks) {
+      try {
+        const decoded = encoder.decode(packet);
+        pcmChunks.push(decoded);
+      } catch (_) {
+        /* skip malformed packets */
+      }
+    }
+
+    if (pcmChunks.length === 0) return;
+
+    const pcmBuffer = Buffer.concat(pcmChunks);
+
+    /* Convert PCM → MP3 for Whisper */
+    await pcmToMp3(pcmBuffer, mp3Path);
+
+    /* Transcribe */
+    const transcript = await transcribeWithWhisper(mp3Path);
+
+    /* Store in Firebase */
+    await storeVoiceLog(userId, user, guild, {
+      durationMs,
+      transcript,
+      sampleSizeBytes: pcmBuffer.length,
+    });
+  } catch (err) {
+    console.error(`[VoiceListen] processVoiceSample error for ${user.username}:`, err.message);
+  } finally {
+    unlink(mp3Path, () => {});
+  }
+}
+
+/* ──────────────────────────────────────────────────────
+   START LISTENING IN CHANNEL
+   Call after joinChannel() to subscribe to all speaking
+   users, capture their audio, transcribe it, and store
+   voice logs + fingerprints in Firebase.
+────────────────────────────────────────────────────── */
+export function startListeningInChannel(connection, guild, discordClient) {
+  const { receiver } = connection;
+  console.log(`[VoiceListen] Listening for voices in ${guild.name}`);
+
+  receiver.speaking.on("start", async (userId) => {
+    const key = `${guild.id}_${userId}`;
+    if (activeRecordings.has(key)) return;
+
+    try {
+      const user = await discordClient.users.fetch(userId).catch(() => null);
+      if (!user || user.bot) return;
+
+      activeRecordings.set(key, true);
+      console.log(`[VoiceListen] Recording ${user.username}...`);
+
+      const opusStream = receiver.subscribe(userId, {
+        end: { behavior: EndBehaviorType.AfterSilence, duration: 1500 },
+      });
+
+      const opusChunks = [];
+      const startTime = Date.now();
+
+      opusStream.on("data", (chunk) => opusChunks.push(chunk));
+
+      opusStream.on("end", async () => {
+        activeRecordings.delete(key);
+        const durationMs = Date.now() - startTime;
+
+        /* Ignore very short clips — noise/blips */
+        if (durationMs < 300 || opusChunks.length < 3) return;
+
+        processVoiceSample(userId, user, guild, opusChunks, durationMs).catch((err) =>
+          console.error("[VoiceListen] Async processVoiceSample error:", err.message)
+        );
+      });
+
+      opusStream.on("error", (err) => {
+        activeRecordings.delete(key);
+        console.error(`[VoiceListen] Audio stream error for ${user.username}:`, err.message);
+      });
+    } catch (err) {
+      activeRecordings.delete(`${guild.id}_${userId}`);
+      console.error("[VoiceListen] speaking.start error:", err.message);
+    }
+  });
 }
