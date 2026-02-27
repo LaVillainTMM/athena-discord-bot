@@ -964,11 +964,23 @@ client.on(Events.MessageCreate, async message => {
         const hasKey = !!process.env.ELEVENLABS_API_KEY;
         let errorNote;
         if (!hasKey) {
-          errorNote = "_[Audio unavailable — ELEVENLABS_API_KEY is not set in Railway. Here is the text instead:]_\n\n";
+          errorNote = "_[Voice unavailable — ElevenLabs key not configured. Here is the text instead:]_\n\n";
         } else if (lastAudioError) {
-          errorNote = `_[Audio failed — ${lastAudioError.substring(0, 120)}. Here is the text instead:]_\n\n`;
+          let friendlyError = "voice generation failed";
+          if (lastAudioError.includes("detected_unusual_activity")) {
+            friendlyError = "API key flagged for unusual activity — please regenerate the ElevenLabs key";
+          } else if (lastAudioError.includes("401")) {
+            friendlyError = "API key invalid or expired";
+          } else if (lastAudioError.includes("429")) {
+            friendlyError = "rate limit reached — try again shortly";
+          } else if (lastAudioError.includes("quota") || lastAudioError.includes("limit")) {
+            friendlyError = "monthly character quota exceeded";
+          } else if (lastAudioError.includes("ECONNREFUSED") || lastAudioError.includes("ETIMEDOUT")) {
+            friendlyError = "could not reach ElevenLabs — network error";
+          }
+          errorNote = `_[Voice unavailable — ${friendlyError}. Here is the text instead:]_\n\n`;
         } else {
-          errorNote = "_[Audio generation failed. Here is the text instead:]_\n\n";
+          errorNote = "_[Voice generation failed. Here is the text instead:]_\n\n";
         }
         const fullText = errorNote + reply;
         const chunks = fullText.match(/[\s\S]{1,1990}/g) || [fullText];
