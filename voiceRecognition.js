@@ -523,13 +523,112 @@ export async function getVoiceProfile(athenaUserId) {
 
 /* ──────────────────────────────────────────────────────
    GET RECENT VOICE SESSIONS
+   Returns both completed and active sessions, newest first.
 ────────────────────────────────────────────────────── */
 export async function getRecentVoiceSessions(guildId, limit = 10) {
-  const snap = await voiceSessionsCol()
+  /* completed sessions (have endTime, ordered properly) */
+  const completedSnap = await voiceSessionsCol()
     .where("guildId", "==", guildId)
     .where("status", "==", "completed")
     .orderBy("endTime", "desc")
     .limit(limit)
     .get();
-  return snap.docs.map(d => d.data());
+
+  /* active sessions (no endTime yet — order by startTime) */
+  const activeSnap = await voiceSessionsCol()
+    .where("guildId", "==", guildId)
+    .where("status", "==", "active")
+    .orderBy("startTime", "desc")
+    .limit(5)
+    .get();
+
+  const completed = completedSnap.docs.map(d => d.data());
+  const active    = activeSnap.docs.map(d => d.data());
+
+  /* merge, deduplicate by sessionId, most recent first */
+  const all = [...active, ...completed];
+  const seen = new Set();
+  const merged = [];
+  for (const s of all) {
+    if (!seen.has(s.sessionId)) {
+      seen.add(s.sessionId);
+      merged.push(s);
+    }
+  }
+  return merged.slice(0, limit);
+}
+
+/* ──────────────────────────────────────────────────────
+   FORMAT VOICE SESSIONS FOR ATHENA CONTEXT
+   Converts session documents into a readable text block
+   that Athena can use to answer voice-related questions.
+────────────────────────────────────────────────────── */
+export function formatVoiceSessionsForContext(sessions) {
+  if (!sessions || sessions.length === 0) {
+    return "[VOICE HISTORY: No voice sessions recorded yet for this server.]\n\n";
+  }
+
+  const lines = [`[VOICE CALL HISTORY — ${sessions.length} recent session(s)]\n`];
+
+  for (const s of sessions) {
+    const start = s.startTime?.toDate?.() ?? new Date(s.startTime);
+    const end   = s.endTime?.toDate?.()   ?? (s.status === "active" ? null : new Date(s.endTime));
+    const durationMins = s.duration ? Math.round(s.duration / 60) : null;
+
+    lines.push(`── Session in #${s.channelName || s.channelId} (${s.status})`);
+    lines.push(`   Started: ${start.toLocaleString()}`);
+    if (end) lines.push(`   Ended:   ${end.toLocaleString()} (${durationMins ?? "?"} min)`);
+
+    const participants = Array.isArray(s.participants) ? s.participants : [];
+    if (participants.length > 0) {
+      const names = participants.map(p => p.displayName).join(", ");
+      lines.push(`   Participants (${participants.length}): ${names}`);
+
+      for (const p of participants) {
+        const msgCount = p.textMessageCount ?? (p.textMessages?.length ?? 0);
+        const style    = p.communicationStyle?.primaryTone ?? null;
+        const detail   = [
+          p.durationSeconds ? `${Math.round(p.durationSeconds / 60)} min` : null,
+          msgCount > 0 ? `${msgCount} msgs` : null,
+          style ? `tone: ${style}` : null,
+        ].filter(Boolean).join(", ");
+        if (detail) lines.push(`     • ${p.displayName}: ${detail}`);
+
+        /* include their transcript lines if any */
+        const msgs = p.textMessages || [];
+        if (msgs.length > 0) {
+          lines.push(`       Messages during call:`);
+          for (const m of msgs.slice(0, 10)) {
+            lines.push(`         "${m}"`);
+          }
+          if (msgs.length > 10) lines.push(`         ... and ${msgs.length - 10} more`);
+        }
+      }
+    } else {
+      lines.push(`   Participants: (none recorded)`);
+    }
+
+    /* group insights */
+    if (s.insights) {
+      lines.push(`   Group dynamics: ${s.insights.groupDynamic ?? ""} | Tone: ${s.insights.overallTone ?? ""}`);
+      if (s.insights.dominantTopics?.length) {
+        lines.push(`   Topics discussed: ${s.insights.dominantTopics.join(", ")}`);
+      }
+    }
+
+    /* text log snippets (what was said in text chat during the call) */
+    const textLog = Array.isArray(s.textLog) ? s.textLog : [];
+    if (textLog.length > 0) {
+      lines.push(`   Text chat during call (${textLog.length} messages):`);
+      for (const entry of textLog.slice(0, 15)) {
+        lines.push(`     [${entry.displayName}]: ${entry.content}`);
+      }
+      if (textLog.length > 15) lines.push(`     ... and ${textLog.length - 15} more`);
+    }
+
+    lines.push("");
+  }
+
+  lines.push("[END VOICE CALL HISTORY]\n");
+  return lines.join("\n");
 }
