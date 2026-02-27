@@ -15,6 +15,8 @@ import {
   startVoiceSession,
   recordParticipantJoin,
   finalizeVoiceSession,
+  buildAllStyleProfiles,
+  buildStyleProfileFromHistory,
 } from "./voiceRecognition.js";
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
@@ -512,6 +514,29 @@ client.on(Events.MessageCreate, async message => {
   /* store every message for awareness — non-blocking */
   storeDiscordMessage(message).catch(() => {});
 
+  /* ── Capture text during active voice sessions ──
+     If this user is currently in a tracked voice session, log
+     their message so it contributes to communication style analysis. */
+  if (message.content && !message.author.bot) {
+    const userId = message.author.id;
+    const content = message.content.trim();
+    const timestamp = new Date().toISOString();
+    for (const [, session] of activeSessions) {
+      if (session.participants.has(userId)) {
+        const p = session.participants.get(userId);
+        if (!p.textMessages) p.textMessages = [];
+        p.textMessages.push(content);
+        if (!session.textLog) session.textLog = [];
+        session.textLog.push({
+          discordId: userId,
+          displayName: p.displayName,
+          content,
+          timestamp,
+        });
+      }
+    }
+  }
+
   /* voice commands */
   if (
     message.content.startsWith("!join") ||
@@ -529,6 +554,19 @@ client.on(Events.MessageCreate, async message => {
   }
   if (message.content.startsWith("!linkaccounts")) {
     await handleLinkAccounts(message);
+    return;
+  }
+
+  /* build communication style profiles from historical messages */
+  if (message.content.startsWith("!buildprofiles")) {
+    if (!ADMIN_IDS.includes(message.author.id)) {
+      await message.reply("Admin only.");
+      return;
+    }
+    await message.reply("Building communication style profiles from message history... this may take a minute.");
+    buildAllStyleProfiles()
+      .then(result => message.reply(`Done — built ${result.built}/${result.total} profiles.`))
+      .catch(err => message.reply(`Error: ${err.message}`));
     return;
   }
 
@@ -731,6 +769,7 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
         channelName: channel?.name || joinedChannelId,
         startTime: new Date(),
         participants: new Map(),
+        textLog: [],
       };
       activeSessions.set(joinedChannelId, session);
       startVoiceSession(session).catch(err =>
@@ -747,6 +786,7 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
       athenaUserId,
       discordId: user.id,
       displayName: user.globalName || user.username,
+      textMessages: [],
     });
 
     /* Record join in Firebase */
@@ -800,10 +840,17 @@ client.once(Events.ClientReady, async () => {
   const knowledge = await getKnowledgeBase();
   console.log(`[Athena] Loaded ${knowledge.length} knowledge entries`);
 
-  /* 3. Start autonomous knowledge learning */
+  /* 3. Start autonomous knowledge learning (every 60 seconds) */
   startKnowledgeLearning();
 
-  /* 4. Backfill all channel history (non-blocking — runs in background) */
+  /* 4. Build communication style profiles from historical messages (non-blocking) */
+  setTimeout(() => {
+    buildAllStyleProfiles()
+      .then(r => console.log(`[VoiceRecognition] Startup profile build: ${r.built}/${r.total} profiles built`))
+      .catch(err => console.error("[VoiceRecognition] Startup profile build error:", err.message));
+  }, 15000); /* wait 15s after ready to let Firestore settle */
+
+  /* 5. Backfill all channel history (non-blocking — runs in background) */
   for (const [, guild] of client.guilds.cache) {
     backfillDiscordHistory(guild, { limitPerChannel: 1000 })
       .then(({ totalStored }) => console.log(`[Backfill] ${guild.name}: ${totalStored} historical messages stored`))
