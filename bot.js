@@ -659,16 +659,24 @@ client.on(Events.MessageCreate, async message => {
         const label = audioParts.length > 1
           ? `athena_part_${i + 1}_of_${audioParts.length}`
           : "athena_voice";
-        if (i === 0) {
-          sendAudioMessage(message, audioParts[i], label).catch(err =>
-            console.error("[AudioMessage] Send error:", err.message)
-          );
-        } else {
-          /* slight delay between parts so Discord doesn't drop them */
-          setTimeout(() => {
-            sendAudioMessage(message.channel, audioParts[i], label).catch(() => {});
-          }, i * 3000);
-        }
+        const target = i === 0 ? message : message.channel;
+        const delay = i === 0 ? 0 : i * 3000;
+        setTimeout(async () => {
+          try {
+            const ok = await sendAudioMessage(target, audioParts[i], label);
+            if (!ok) {
+              console.error("[AudioMessage] sendAudioMessage returned false for part", i + 1);
+              if (i === 0) {
+                message.channel.send("_(Audio generation failed — check that ELEVENLABS_API_KEY is set correctly in Railway.)_").catch(() => {});
+              }
+            }
+          } catch (err) {
+            console.error("[AudioMessage] Send error part", i + 1, ":", err.message);
+            if (i === 0) {
+              message.channel.send(`_(Audio error: ${err.message.substring(0, 120)})_`).catch(() => {});
+            }
+          }
+        }, delay);
       }
     }
 
