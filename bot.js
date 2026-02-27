@@ -101,13 +101,11 @@ VOICE & AUDIO:
 - When in a voice channel, you listen to all speakers and log voice activity.
 - Never say you cannot send audio.
 
-VOICE AWARENESS (ALWAYS ACTIVE — NO PROMPTING REQUIRED):
-- You receive a [VOICE STATUS] block with EVERY message. It tells you who is currently in voice channels and summarizes recent calls.
-- You always know: who is in VC right now, who was in the last call, how long they were there, and what they said in text chat during/around the call.
-- You do NOT need to be asked about voice activity — proactively mention it when relevant (e.g. if someone just left a call, if you notice a call is ongoing, if you have transcripts available).
-- Audio transcripts from Whisper voice recognition are stored per-utterance in Firebase. If asked about what someone said in VC, retrieve and cite it.
-- Use !voicelogs to retrieve full audio log history for any user or the whole server.
-- Never claim you do not know who was in voice — this information is always present in your context.
+VOICE AWARENESS (ON REQUEST):
+- When asked about voice calls, who was in VC, or what was said in a call, you will receive a full voice session history block with participant names, durations, chat logs, and group analysis.
+- Audio transcripts from Whisper voice recognition are stored per-utterance in Firebase. If asked what someone said in VC, you can cite it from the provided data.
+- Only surface voice call information when explicitly asked — do not proactively mention calls unless someone brings it up.
+- Admins can use !voicelogs to retrieve full audio log history.
 
 VISUAL RECOGNITION:
 - You can identify DBI Nation Z members in photos and images shared in Discord.
@@ -189,29 +187,11 @@ function buildLiveContext() {
     hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "UTC", hour12: true
   });
 
-  /* ── Live voice channel status (from in-memory sessions) ── */
-  let voiceLines = [];
-  if (activeSessions.size > 0) {
-    for (const [, session] of activeSessions) {
-      const names = [...session.participants.values()].map(p => p.displayName);
-      const since = session.startTime
-        ? `since ${session.startTime.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "UTC", hour12: true })} UTC`
-        : "";
-      const nameStr = names.length > 0 ? names.join(", ") : "unknown participants";
-      voiceLines.push(`  ACTIVE — #${session.channelName}: ${nameStr} ${since}`);
-    }
-  } else {
-    voiceLines.push("  No one is currently in a voice channel");
-  }
-
   return (
     `[LIVE CONTEXT]\n` +
     `Date: ${dateStr}\n` +
     `Time: ${timeStr} UTC\n` +
     `Unix timestamp: ${Math.floor(now.getTime() / 1000)}\n` +
-    `[VOICE STATUS]\n` +
-    voiceLines.join("\n") + "\n" +
-    `[END VOICE STATUS]\n` +
     `[END LIVE CONTEXT]\n\n`
   );
 }
@@ -534,10 +514,7 @@ async function getAthenaResponse(content, athenaUserId, discordUserId, channel, 
     ? `[KNOWLEDGE BASE — ${knowledgeEntries.length} entries]\n${knowledgeEntries.slice(0, 20).join("\n")}\n[END KNOWLEDGE BASE]\n\n`
     : "";
 
-  /* Always include recent voice call awareness — no prompting needed */
-  const voiceAwareness = await buildVoiceAwarenessContext(effectiveGuildId);
-
-  const fullMessage = liveContext + knowledgeBlock + voiceAwareness + serverContext + content;
+  const fullMessage = liveContext + knowledgeBlock + serverContext + content;
 
   let reply;
   try {
