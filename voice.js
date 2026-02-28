@@ -103,6 +103,22 @@ export async function joinChannel(guild, voiceChannel) {
     voiceConnections.delete(guild.id);
   }
 
+  /* ── Permission pre-check ── */
+  const me = guild.members.me ?? await guild.members.fetchMe().catch(() => null);
+  if (me) {
+    const perms = voiceChannel.permissionsFor(me);
+    const missing = [];
+    if (!perms.has("ViewChannel")) missing.push("View Channel");
+    if (!perms.has("Connect"))     missing.push("Connect");
+    if (!perms.has("Speak"))       missing.push("Speak");
+    if (missing.length > 0) {
+      throw new Error(
+        `Missing permissions in **${voiceChannel.name}**: ${missing.join(", ")}. ` +
+        `A server admin needs to grant these to the Athena bot role on that channel.`
+      );
+    }
+  }
+
   const connection = joinVoiceChannel({
     channelId: voiceChannel.id,
     guildId: guild.id,
@@ -115,7 +131,10 @@ export async function joinChannel(guild, voiceChannel) {
     await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
   } catch (err) {
     connection.destroy();
-    throw new Error("Could not connect to voice channel. Check bot permissions.");
+    throw new Error(
+      `Timed out connecting to **${voiceChannel.name}**. ` +
+      `Verify the bot has Connect + Speak permissions on that channel in server settings.`
+    );
   }
 
   connection.on(VoiceConnectionStatus.Disconnected, async () => {
