@@ -1131,25 +1131,75 @@ client.on(Events.MessageCreate, async message => {
     }
 
     /* ── Natural language voice join ──
-       If the user asks Athena to join their voice channel in plain text,
-       join and speak the response there — no text message sent. */
-    if (!isDM) {
+       Works from both guild channels AND DMs.
+       Priority: named channel by message text → user's current channel → none */
+    {
       const lower = message.content.toLowerCase();
       const wantsVoiceJoin =
-        /\b(join|come to|hop in|get in)\b.{0,25}\b(voice|vc|call|channel|chat)\b/.test(lower) ||
-        /\bjoin (me|us)\b/.test(lower);
-      const userVoiceChannel = message.member?.voice?.channel;
+        /\b(join|come to|hop in|get in|enter|jump in)\b.{0,35}\b(voice|vc|call|channel|chat|talk)\b/i.test(message.content) ||
+        /\bjoin (me|us)\b/i.test(message.content);
 
-      if (wantsVoiceJoin && userVoiceChannel) {
-        try {
-          const state = await joinChannel(message.guild, userVoiceChannel);
-          const joinSessionId = activeSessions.get(userVoiceChannel.id)?.sessionId ?? null;
-          startListeningInChannel(state.connection, message.guild, client, joinSessionId);
-          speak(message.guild, userVoiceChannel, reply).catch(() => {});
-          return;
-        } catch (joinErr) {
-          console.error("[VoiceJoin] Natural join failed:", joinErr.message);
-          /* fall through to normal text reply */
+      if (wantsVoiceJoin) {
+        /* Resolve the guild — from a server message or from primary guild (DMs) */
+        const targetGuild = isDM
+          ? (primaryGuildId ? client.guilds.cache.get(primaryGuildId) : null)
+          : message.guild;
+
+        if (targetGuild) {
+          /* Try to extract a channel name from the message text.
+             e.g. "join the Talk Talk voice channel" → "Talk Talk"
+             e.g. "join the VC called General" → "General" */
+          let targetChannel = null;
+
+          /* 1. Named channel: look for words after "join (the)?" before "voice/vc/channel/chat" */
+          const namedMatch = message.content.match(
+            /\bjoin(?:\s+the)?\s+(.+?)\s*(?:voice|vc|channel|chat|call)(?:\s+channel)?\b/i
+          );
+          if (namedMatch) {
+            const namePart = namedMatch[1].trim().replace(/^(talk talk|general|main|lobby|the|a|an)\s+/i, m =>
+              /* keep compound names like "Talk Talk" */ namedMatch[1].trim().toLowerCase() === m.trim().toLowerCase() ? "" : m
+            );
+            /* Search voice channels by name (case-insensitive, partial match) */
+            targetChannel = targetGuild.channels.cache.find(ch =>
+              ch.type === 2 /* GuildVoice */ &&
+              ch.name.toLowerCase().includes(namePart.toLowerCase())
+            ) || null;
+          }
+
+          /* 2. Fall back to the channel the user is physically sitting in */
+          if (!targetChannel && !isDM) {
+            targetChannel = message.member?.voice?.channel ?? null;
+          }
+
+          /* 3. Fall back to the first occupied voice channel in the guild */
+          if (!targetChannel) {
+            targetChannel = targetGuild.channels.cache.find(ch =>
+              ch.type === 2 && ch.members.filter(m => !m.user.bot).size > 0
+            ) ?? null;
+          }
+
+          if (targetChannel) {
+            try {
+              const state = await joinChannel(targetGuild, targetChannel);
+              const joinSessionId = activeSessions.get(targetChannel.id)?.sessionId ?? null;
+              startListeningInChannel(state.connection, targetGuild, client, joinSessionId);
+              speak(targetGuild, targetChannel, reply).catch(() => {});
+              if (isDM) {
+                await message.reply(`Joined **${targetChannel.name}** in ${targetGuild.name}.`);
+              }
+              console.log(`[VoiceJoin] Joined "${targetChannel.name}" via "${isDM ? "DM" : "guild"}" request`);
+              return;
+            } catch (joinErr) {
+              console.error("[VoiceJoin] Join failed:", joinErr.message);
+              await message.reply(`I couldn't join that channel: ${joinErr.message}`).catch(() => {});
+              /* fall through to normal reply */
+            }
+          } else if (isDM) {
+            await message.reply(
+              `I couldn't find which voice channel to join. Say the channel name — for example: "join the Talk Talk channel".`
+            ).catch(() => {});
+            return;
+          }
         }
       }
     }
