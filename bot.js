@@ -486,6 +486,13 @@ function parseHistoryRequest(content, knownChannelData = {}) {
 ────────────────────────────────────────────────────── */
 function parseVoiceSessionRequest(content) {
   const lower = content.toLowerCase();
+
+  /* Exclude voice JOIN requests — these are actions, not history queries */
+  const isJoinRequest =
+    /\b(join|come to|hop in|get in|enter|jump in)\b.{0,30}\b(voice|vc|call|channel|chat)\b/i.test(content) ||
+    /\bjoin (me|us)\b/i.test(content);
+  if (isJoinRequest) return null;
+
   const voiceKeywords = [
     "voice call", "voice channel", "vc", "in the vc",
     "who was in", "who was on", "who joined", "who was there",
@@ -524,31 +531,40 @@ const client = new Client({
 /* ---------------- FIRESTORE CONVERSATION HISTORY ---------------- */
 async function loadConversation(athenaUserId) {
   try {
-    /* No .orderBy() here — avoids requiring a composite Firestore index.
-       We fetch by athena_user_id only, then sort in memory by createdAt. */
+    /* No .orderBy() — avoids a composite Firestore index requirement.
+       Each saved document contains BOTH the user message ("text") and
+       Athena's response ("response") in one document. We convert each
+       document into a user+model pair for proper alternating history. */
     const snap = await firestore
       .collection("messages")
       .where("athena_user_id", "==", athenaUserId)
       .limit(40)
       .get();
 
-    return snap.docs
+    const pairs = snap.docs
       .filter(d => {
         const data = d.data();
-        return data.response || data.text || data.content;
+        return (data.text || data.content) && data.response;
       })
       .map(d => {
         const data = d.data();
         const ts = data.createdAt?.toMillis ? data.createdAt.toMillis() : 0;
         return {
-          role: data.response ? "model" : "user",
-          content: data.response || data.text || data.content || "",
+          userContent:  data.text || data.content || "",
+          modelContent: data.response || "",
           _ts: ts,
         };
       })
-      .sort((a, b) => a._ts - b._ts)   /* oldest first */
-      .slice(-20)                        /* keep last 20 */
-      .map(({ role, content }) => ({ role, content }));
+      .sort((a, b) => a._ts - b._ts)  /* oldest first */
+      .slice(-10);                      /* last 10 exchanges = 20 turns max */
+
+    /* Flatten into alternating user / model turns as Gemini requires */
+    const history = [];
+    for (const pair of pairs) {
+      if (pair.userContent)  history.push({ role: "user",  content: pair.userContent });
+      if (pair.modelContent) history.push({ role: "model", content: pair.modelContent });
+    }
+    return history;
   } catch (error) {
     console.error("[History] Error:", error.message);
     return [];
