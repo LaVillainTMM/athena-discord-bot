@@ -524,22 +524,31 @@ const client = new Client({
 /* ---------------- FIRESTORE CONVERSATION HISTORY ---------------- */
 async function loadConversation(athenaUserId) {
   try {
+    /* No .orderBy() here — avoids requiring a composite Firestore index.
+       We fetch by athena_user_id only, then sort in memory by createdAt. */
     const snap = await firestore
       .collection("messages")
       .where("athena_user_id", "==", athenaUserId)
-      .orderBy("createdAt", "desc")
-      .limit(20)
+      .limit(40)
       .get();
+
     return snap.docs
-      .filter(d => d.data().response || d.data().text || d.data().content)
+      .filter(d => {
+        const data = d.data();
+        return data.response || data.text || data.content;
+      })
       .map(d => {
         const data = d.data();
+        const ts = data.createdAt?.toMillis ? data.createdAt.toMillis() : 0;
         return {
           role: data.response ? "model" : "user",
-          content: data.response || data.text || data.content || ""
+          content: data.response || data.text || data.content || "",
+          _ts: ts,
         };
       })
-      .reverse();
+      .sort((a, b) => a._ts - b._ts)   /* oldest first */
+      .slice(-20)                        /* keep last 20 */
+      .map(({ role, content }) => ({ role, content }));
   } catch (error) {
     console.error("[History] Error:", error.message);
     return [];
@@ -1096,7 +1105,14 @@ client.on(Events.MessageCreate, async message => {
     /* pass the channel and guild for context (null in DMs) */
     const channel = isDM ? null : message.channel;
     const guild = isDM ? null : message.guild;
-    const reply = await getAthenaResponse(message.content, athenaUserId, message.author.id, channel, guild);
+    let reply = await getAthenaResponse(message.content, athenaUserId, message.author.id, channel, guild);
+
+    /* Guard: Gemini can return an empty string when search grounding consumes the full
+       context without generating visible text. Fall back to a safe default. */
+    if (!reply || !reply.trim()) {
+      console.warn("[Athena] Empty reply from Gemini — using fallback.");
+      reply = "I'm processing that — give me a moment and ask again if I don't follow up.";
+    }
 
     /* ── Natural language voice join ──
        If the user asks Athena to join their voice channel in plain text,
