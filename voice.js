@@ -137,16 +137,26 @@ export async function joinChannel(guild, voiceChannel) {
     );
   }
 
+  /* ── Reconnect on transient disconnects (Railway can blip the UDP stream) ── */
   connection.on(VoiceConnectionStatus.Disconnected, async () => {
+    console.log(`[Voice] Disconnected from #${voiceChannel.name} — attempting to recover...`);
     try {
+      /* Give Discord 30 seconds to re-establish before giving up */
       await Promise.race([
-        entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
-        entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+        entersState(connection, VoiceConnectionStatus.Signalling, 30_000),
+        entersState(connection, VoiceConnectionStatus.Connecting, 30_000),
       ]);
+      console.log(`[Voice] Reconnecting to #${voiceChannel.name}...`);
     } catch {
+      console.warn(`[Voice] Could not reconnect to #${voiceChannel.name} — destroying connection.`);
       connection.destroy();
-      voiceConnections.delete(guild.id);
     }
+  });
+
+  /* ── Clean up the map when the connection is fully destroyed ── */
+  connection.on(VoiceConnectionStatus.Destroyed, () => {
+    voiceConnections.delete(guild.id);
+    console.log(`[Voice] Connection destroyed for guild ${guild.id} (#${voiceChannel.name})`);
   });
 
   const player = createAudioPlayer();
@@ -163,13 +173,20 @@ export function leaveChannel(guildId) {
   const state = voiceConnections.get(guildId);
   if (!state) return false;
   state.connection.destroy();
-  voiceConnections.delete(guildId);
+  /* voiceConnections map is cleaned up by the Destroyed listener */
   console.log(`[Voice] Left voice channel in guild ${guildId}`);
   return true;
 }
 
 export function isInVoice(guildId) {
-  return voiceConnections.has(guildId);
+  const state = voiceConnections.get(guildId);
+  if (!state) return false;
+  const status = state.connection.state.status;
+  return (
+    status === VoiceConnectionStatus.Ready ||
+    status === VoiceConnectionStatus.Signalling ||
+    status === VoiceConnectionStatus.Connecting
+  );
 }
 
 export function getVoiceChannelId(guildId) {

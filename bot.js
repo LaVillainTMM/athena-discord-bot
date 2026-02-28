@@ -1278,6 +1278,17 @@ client.on(Events.MessageCreate, async message => {
       if (userVoiceChannel && userVoiceChannel.id === athenaChannelId) {
         speak(message.guild, userVoiceChannel, reply).catch(() => {});
       }
+    } else if (isDM && primaryGuildId) {
+      /* DM path — check if Athena is in voice in the primary guild and the sender is in that channel */
+      const primaryGuild = client.guilds.cache.get(primaryGuildId);
+      if (primaryGuild && isInVoice(primaryGuild.id)) {
+        const athenaChannelId = getVoiceChannelId(primaryGuild.id);
+        const member = await primaryGuild.members.fetch(message.author.id).catch(() => null);
+        const userVoiceChannel = member?.voice?.channel;
+        if (userVoiceChannel && userVoiceChannel.id === athenaChannelId) {
+          speak(primaryGuild, userVoiceChannel, reply).catch(() => {});
+        }
+      }
     }
   } catch (error) {
     console.error("[Message] Error:", error);
