@@ -4,6 +4,7 @@ import { speak } from "./voice/speak.js";
 import { startListening } from "./voice/listener.js";
 import { joinVoice } from "./voice/joinVoice.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+let voiceConnection = null;
 import { admin, firestore } from "./firebase.js";
 import {
   getOrCreateAthenaUser,
