@@ -35,7 +35,6 @@ import {
   getKnownChannels,
   getActivityPeaks,
 } from "./athenaDiscord.js";
-import { joinChannel, leaveChannel, isInVoice, getVoiceChannelId, speak, startListeningInChannel } from "./voice.js";
 import { sendAudioMessage, isAudioRequest, splitResponseForAudio } from "./audioMessage.js";
 import { syncLatestDojPressReleases, searchAndStoreDoj, getDojKnowledgeSummary } from "./lib/dojKnowledge.js";
 import { storeMemberVisualProfile, identifyMembersInImage } from "./visualIdentity.js";
