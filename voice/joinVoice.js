@@ -1,25 +1,27 @@
-import { joinVoiceChannel, entersState, VoiceConnectionStatus } 
-from "@discordjs/voice";
+import {
+  joinVoiceChannel,
+  entersState,
+  VoiceConnectionStatus
+} from "@discordjs/voice";
 
 export async function joinVoice(member) {
 
-  const channel = member.voice.channel;
-  if (!channel) return null;
+  if (!member.voice.channel) return null;
 
   const connection = joinVoiceChannel({
-    channelId: channel.id,
-    guildId: channel.guild.id,
-    adapterCreator: channel.guild.voiceAdapterCreator,
+    channelId: member.voice.channel.id,
+    guildId: member.guild.id,
+    adapterCreator: member.guild.voiceAdapterCreator,
     selfDeaf: false
   });
 
   try {
     await entersState(connection, VoiceConnectionStatus.Ready, 30000);
-    console.log("✅ Athena joined voice channel");
+    console.log("✅ Athena connected to voice");
     return connection;
-  } catch (error) {
+  } catch (err) {
+    console.error("Voice join failed:", err);
     connection.destroy();
-    console.error("Voice connection failed:", error);
     return null;
   }
 }
