@@ -2,10 +2,7 @@ import "dotenv/config";
 import { Client, GatewayIntentBits, Events, Partials, ChannelType } from "discord.js";
 import { speak } from "./voice/speak.js";
 import { startListening as startListeningInChannel } from "./voice/listener.js";
-import {
-  joinVoice as joinChannel,
-  isInVoice
-} from "./voice/joinVoice.js";
+import { joinVoice as joinChannel } from "./voice/joinVoice.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 let voiceConnection = null;
 import { admin, firestore } from "./firebase.js";
