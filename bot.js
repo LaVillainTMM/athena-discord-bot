@@ -3,9 +3,11 @@ import { Client, GatewayIntentBits, Events, Partials, ChannelType } from "discor
 import { speak } from "./voice/speak.js";
 import { startListening as startListeningInChannel } from "./voice/listener.js";
 import {
-  joinVoice as joinChannel,
-  isInVoice
-} from "./voice/joinVoice.js";
+  joinChannel,
+  leaveChannel,
+  isInVoice,
+  speak
+} from "./voice.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 let voiceConnection = null;
 import { admin, firestore } from "./firebase.js";
