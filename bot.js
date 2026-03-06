@@ -1,23 +1,26 @@
 import "dotenv/config";
 import { Client, GatewayIntentBits, Events, Partials, ChannelType } from "discord.js";
-import { startListening as startListeningInChannel } from "./voice/listener.js";
+
 import {
   joinChannel,
   leaveChannel,
   isInVoice,
-  speak
+  speak,
+  startListeningInChannel
 } from "./voice.js";
+
 import { GoogleGenerativeAI } from "@google/generative-ai";
-let voiceConnection = null;
 import { admin, firestore } from "./firebase.js";
+
 import {
   getOrCreateAthenaUser,
   getAthenaUserIdForDiscordId,
   updateUserNation,
   recordActivity,
   mergeDiscordAccounts,
-  forceCreateAndLinkDiscordIds,
+  forceCreateAndLinkDiscordIds
 } from "./athenaUser.js";
+
 import {
   getOrCreateVoiceProfile,
   startVoiceSession,
@@ -26,22 +29,43 @@ import {
   buildAllStyleProfiles,
   buildStyleProfileFromHistory,
   getRecentVoiceSessions,
-  formatVoiceSessionsForContext,
+  formatVoiceSessionsForContext
 } from "./voiceRecognition.js";
+
 import runQuiz from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
+
 import { getKnowledgeBase, startKnowledgeLearning } from "./knowledgeAPI.js";
+
 import {
   storeDiscordMessage,
   backfillDiscordHistory,
   getRecentChannelContext,
   buildServerContext,
   getKnownChannels,
-  getActivityPeaks,
+  getActivityPeaks
 } from "./athenaDiscord.js";
-import { sendAudioMessage, isAudioRequest, splitResponseForAudio } from "./audioMessage.js";
-import { syncLatestDojPressReleases, searchAndStoreDoj, getDojKnowledgeSummary } from "./lib/dojKnowledge.js";
-import { storeMemberVisualProfile, identifyMembersInImage } from "./visualIdentity.js";
+
+import {
+  sendAudioMessage,
+  isAudioRequest,
+  splitResponseForAudio
+} from "./audioMessage.js";
+
+import {
+  syncLatestDojPressReleases,
+  searchAndStoreDoj,
+  getDojKnowledgeSummary
+} from "./lib/dojKnowledge.js";
+
+import {
+  storeMemberVisualProfile,
+  identifyMembersInImage
+} from "./visualIdentity.js";
+
+
+
+
 
 if (!process.env.DISCORD_TOKEN) throw new Error("DISCORD_TOKEN missing");
 if (!process.env.GOOGLE_GENAI_API_KEY) throw new Error("GOOGLE_GENAI_API_KEY missing");
