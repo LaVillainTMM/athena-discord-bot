@@ -13,6 +13,7 @@ function buildFromEnvVars() {
       client_email: clientEmail,
     };
   }
+
   return null;
 }
 
@@ -36,6 +37,7 @@ function parseServiceAccount(raw) {
       if (result && result.project_id) return result;
     } catch {}
   }
+
   return null;
 }
 
@@ -49,11 +51,10 @@ if (!admin.apps.length) {
   if (!serviceAccount || !serviceAccount.project_id) {
     console.error("[Firebase] Could not load service account credentials.");
     console.error("[Firebase] Option 1: Set FIREBASE_SERVICE_ACCOUNT as a single-line JSON string");
-    console.error("[Firebase]   Copy your .json file, remove all newlines, paste as one line");
-    console.error("[Firebase] Option 2: Set these 3 separate env vars instead:");
-    console.error("[Firebase]   FIREBASE_PROJECT_ID=your-project-id");
-    console.error("[Firebase]   FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxx@project.iam.gserviceaccount.com");
-    console.error("[Firebase]   FIREBASE_PRIVATE_KEY=<your-private-key-from-service-account-json>");
+    console.error("[Firebase] Option 2: Set these env vars:");
+    console.error("FIREBASE_PROJECT_ID");
+    console.error("FIREBASE_CLIENT_EMAIL");
+    console.error("FIREBASE_PRIVATE_KEY");
     process.exit(1);
   }
 
@@ -61,13 +62,15 @@ if (!admin.apps.length) {
 
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
-    databaseURL: "https://athenaai-memory-default-rtdb.firebaseio.com",
+    databaseURL: process.env.FIREBASE_DATABASE_URL || "https://athenaai-memory-default-rtdb.firebaseio.com",
   });
 }
 
-const db = admin.firestore();
-const rtdb = admin.database();
+const firestore = admin.firestore();
+const realtimeDB = admin.database();
 
-export { admin, db, rtdb };
-export const firestore = db;
-export const realtimeDB = admin.database();
+firestore.settings({
+  ignoreUndefinedProperties: true,
+});
+
+export { admin, firestore, realtimeDB };
