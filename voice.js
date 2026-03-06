@@ -15,8 +15,7 @@ import { writeFile } from "fs/promises";
 import { execFile } from "child_process";
 import { PassThrough } from "stream";
 import ffmpegPath from "ffmpeg-static";
-import { admin, firestore } from "./firebase.js";
-
+import { admin, firestore, realtimeDB } from "./firebase.js";
 /* Map of guildId → { connection, player, channelId } */
 const voiceConnections = new Map();
 
