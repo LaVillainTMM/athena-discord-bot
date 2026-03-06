@@ -70,3 +70,4 @@ const rtdb = admin.database();
 
 export { admin, db, rtdb };
 export const firestore = db;
+export const realtimeDB = admin.database();
