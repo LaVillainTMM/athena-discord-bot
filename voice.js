@@ -313,12 +313,40 @@ function pcmToMp3(pcmBuffer, outputPath) {
   });
 }
 
+
+function extractTopics(text) {
+
+  if (!text) return [];
+
+  const keywords = [
+    "AI",
+    "Athena",
+    "Unity",
+    "Discord",
+    "Firebase",
+    "ship",
+    "quantum",
+    "physics",
+    "space",
+    "military"
+  ];
+
+  const lower = text.toLowerCase();
+
+  return keywords.filter(k =>
+    lower.includes(k.toLowerCase())
+  );
+}
+
+
 /* Store a voice log entry + update voice fingerprint in Firebase */
 async function storeVoiceLog(userId, user, guild, { durationMs, transcript, sampleSizeBytes, sessionId }) {
+
   try {
-    const fingerprintRef = firestore
-      .collection("voice_fingerprints")
-      .doc(userId);
+
+    const timestamp = new Date().toISOString();
+
+    const topics = extractTopics(transcript);
 
     const logEntry = {
       discordId: userId,
@@ -326,42 +354,63 @@ async function storeVoiceLog(userId, user, guild, { durationMs, transcript, samp
       displayName: user.globalName || user.username,
       guildId: guild.id,
       guildName: guild.name,
-      timestamp: new Date().toISOString(),
+      timestamp,
       durationMs,
       sampleSizeBytes,
       transcript: transcript || null,
-      sessionId: sessionId || null,
+      topics,
+      sessionId: sessionId || null
     };
 
-    /* Add this sample to the audio_logs subcollection */
+    /* ------------------------
+       FIRESTORE (long memory)
+    ------------------------ */
+
+    const fingerprintRef = firestore
+      .collection("voice_fingerprints")
+      .doc(userId);
+
     await fingerprintRef
       .collection("audio_logs")
       .add(logEntry);
 
-    /* Update (or create) the fingerprint document with latest metadata */
     await fingerprintRef.set(
       {
         discordId: userId,
         username: user.username,
         displayName: user.globalName || user.username,
         avatarUrl: user.displayAvatarURL?.({ size: 256 }) ?? null,
-        lastSeen: new Date().toISOString(),
+        lastSeen: timestamp,
         sampleCount: admin.firestore.FieldValue.increment(1),
         totalDurationMs: admin.firestore.FieldValue.increment(durationMs),
         guilds: { [guild.id]: guild.name },
-        lastTranscript: transcript || null,
+        lastTranscript: transcript || null
       },
       { merge: true }
     );
 
-    console.log(`[VoiceListen] Stored voice log for ${user.username}: "${transcript || "no transcript"}" (${durationMs}ms)`);
+    /* ------------------------
+       REALTIME DATABASE
+       (live conversation feed)
+    ------------------------ */
+
+    await realtimeDB
+      .ref(`live_voice/${guild.id}`)
+      .push(logEntry);
+
+    console.log(
+      `[VoiceListen] ${user.username}: "${transcript || "no transcript"}"`
+    );
+
   } catch (err) {
+
     console.error("[VoiceListen] storeVoiceLog error:", err.message);
+
   }
 }
 
 /* Process a captured Opus audio chunk array for one user utterance */
-async function processVoiceSample(userId, user, guild, opusChunks, durationMs, sessionId) {
+async function processVoiceSample(userId, user, guild, channelId, opusChunks, durationMs, sessionId)
   if (opusChunks.length === 0) return;
 
   const ts = Date.now();
@@ -392,11 +441,12 @@ async function processVoiceSample(userId, user, guild, opusChunks, durationMs, s
 
     /* Store in Firebase — include sessionId so fingerprints link to the session */
     await storeVoiceLog(userId, user, guild, {
-      durationMs,
-      transcript,
-      sampleSizeBytes: pcmBuffer.length,
-      sessionId: sessionId || null,
-    });
+  durationMs,
+  transcript,
+  sampleSizeBytes: pcmBuffer.length,
+  sessionId,
+  channelId
+});
   } catch (err) {
     console.error(`[VoiceListen] processVoiceSample error for ${user.username}:`, err.message);
   } finally {
@@ -441,7 +491,15 @@ export function startListeningInChannel(connection, guild, discordClient, sessio
         /* Ignore very short clips — noise/blips */
         if (durationMs < 300 || opusChunks.length < 3) return;
 
-        processVoiceSample(userId, user, guild, opusChunks, durationMs, sessionId).catch((err) =>
+        processVoiceSample(
+  userId,
+  user,
+  guild,
+  connection.joinConfig.channelId,
+  opusChunks,
+  durationMs,
+  sessionId
+).catch((err) =>
           console.error("[VoiceListen] Async processVoiceSample error:", err.message)
         );
       });
