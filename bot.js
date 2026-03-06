@@ -1,6 +1,5 @@
 import "dotenv/config";
 import { Client, GatewayIntentBits, Events, Partials, ChannelType } from "discord.js";
-import { speak } from "./voice/speak.js";
 import { startListening as startListeningInChannel } from "./voice/listener.js";
 import {
   joinChannel,
