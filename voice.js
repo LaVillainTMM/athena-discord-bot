@@ -10,31 +10,37 @@ import {
 } from "@discordjs/voice";
 import opusPkg from "@discordjs/opus";
 const { OpusEncoder } = opusPkg;
+
 import { unlink, writeFileSync } from "fs";
 import { writeFile } from "fs/promises";
 import { execFile } from "child_process";
 import { PassThrough } from "stream";
 import ffmpegPath from "ffmpeg-static";
+
 import { admin, firestore, realtimeDB } from "./firebase.js";
+
 /* Map of guildId → { connection, player, channelId } */
 const voiceConnections = new Map();
 
-/* ── Azure TTS config (mirrors audioMessage.js) ── */
-const AZURE_VOICE         = "en-GB-SoniaNeural";
+/* Prevent duplicate listeners */
+const listeningGuilds = new Set();
+
+/* Azure TTS */
+const AZURE_VOICE = "en-GB-SoniaNeural";
 const AZURE_OUTPUT_FORMAT = "audio-24khz-160kbitrate-mono-mp3";
 
 function escapeXml(text) {
   return text
-    .replace(/&/g,  "&amp;")
-    .replace(/</g,  "&lt;")
-    .replace(/>/g,  "&gt;")
-    .replace(/"/g,  "&quot;")
-    .replace(/'/g,  "&apos;");
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
 }
 
-/* ── Generate MP3 to a temp file via Azure TTS ── */
+/* Azure TTS → MP3 file */
 async function azureTtsToFile(text, filepath) {
-  const key    = process.env.AZURE_SPEECH_KEY;
+  const key = process.env.AZURE_SPEECH_KEY;
   const region = process.env.AZURE_SPEECH_REGION || "eastus";
 
   const ssml = `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-GB'>
@@ -49,9 +55,9 @@ async function azureTtsToFile(text, filepath) {
       method: "POST",
       headers: {
         "Ocp-Apim-Subscription-Key": key,
-        "Content-Type":              "application/ssml+xml",
-        "X-Microsoft-OutputFormat":  AZURE_OUTPUT_FORMAT,
-        "User-Agent":                "AthenaBot",
+        "Content-Type": "application/ssml+xml",
+        "X-Microsoft-OutputFormat": AZURE_OUTPUT_FORMAT,
+        "User-Agent": "AthenaBot",
       },
       body: ssml,
     }
@@ -66,13 +72,12 @@ async function azureTtsToFile(text, filepath) {
   await writeFile(filepath, Buffer.from(buffer));
 }
 
-/* ── Fallback: node-gtts stream (used when Azure key is absent) ── */
-
-/* Split long text at sentence boundaries for Google TTS 190-char limit */
+/* Split text for fallback TTS */
 function splitText(text, maxLen = 190) {
   const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
   const chunks = [];
   let current = "";
+
   for (const s of sentences) {
     if ((current + s).length > maxLen) {
       if (current) chunks.push(current.trim());
@@ -81,6 +86,7 @@ function splitText(text, maxLen = 190) {
       current += s;
     }
   }
+
   if (current.trim()) chunks.push(current.trim());
   return chunks.length ? chunks : [text.substring(0, maxLen)];
 }
@@ -93,29 +99,14 @@ async function gttsTtsStream(text) {
   return pass;
 }
 
-/* ── Join a voice channel ── */
-export async function joinChannel(guild, voiceChannel) {
+/* Join voice */
+export async function joinChannel(guild, voiceChannel, discordClient = null) {
   const existing = voiceConnections.get(guild.id);
+
   if (existing) {
     if (existing.channelId === voiceChannel.id) return existing;
     existing.connection.destroy();
     voiceConnections.delete(guild.id);
-  }
-
-  /* ── Permission pre-check ── */
-  const me = guild.members.me ?? await guild.members.fetchMe().catch(() => null);
-  if (me) {
-    const perms = voiceChannel.permissionsFor(me);
-    const missing = [];
-    if (!perms.has("ViewChannel")) missing.push("View Channel");
-    if (!perms.has("Connect"))     missing.push("Connect");
-    if (!perms.has("Speak"))       missing.push("Speak");
-    if (missing.length > 0) {
-      throw new Error(
-        `Missing permissions in **${voiceChannel.name}**: ${missing.join(", ")}. ` +
-        `A server admin needs to grant these to the Athena bot role on that channel.`
-      );
-    }
   }
 
   const connection = joinVoiceChannel({
@@ -127,35 +118,25 @@ export async function joinChannel(guild, voiceChannel) {
   });
 
   try {
-    await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
-  } catch (err) {
+    await entersState(connection, VoiceConnectionStatus.Ready, 15000);
+  } catch {
     connection.destroy();
-    throw new Error(
-      `Timed out connecting to **${voiceChannel.name}**. ` +
-      `Verify the bot has Connect + Speak permissions on that channel in server settings.`
-    );
+    throw new Error(`Voice connection failed for ${voiceChannel.name}`);
   }
 
-  /* ── Reconnect on transient disconnects (Railway can blip the UDP stream) ── */
   connection.on(VoiceConnectionStatus.Disconnected, async () => {
-    console.log(`[Voice] Disconnected from #${voiceChannel.name} — attempting to recover...`);
     try {
-      /* Give Discord 30 seconds to re-establish before giving up */
       await Promise.race([
-        entersState(connection, VoiceConnectionStatus.Signalling, 30_000),
-        entersState(connection, VoiceConnectionStatus.Connecting, 30_000),
+        entersState(connection, VoiceConnectionStatus.Signalling, 30000),
+        entersState(connection, VoiceConnectionStatus.Connecting, 30000),
       ]);
-      console.log(`[Voice] Reconnecting to #${voiceChannel.name}...`);
     } catch {
-      console.warn(`[Voice] Could not reconnect to #${voiceChannel.name} — destroying connection.`);
       connection.destroy();
     }
   });
 
-  /* ── Clean up the map when the connection is fully destroyed ── */
   connection.on(VoiceConnectionStatus.Destroyed, () => {
     voiceConnections.delete(guild.id);
-    console.log(`[Voice] Connection destroyed for guild ${guild.id} (#${voiceChannel.name})`);
   });
 
   const player = createAudioPlayer();
@@ -163,24 +144,30 @@ export async function joinChannel(guild, voiceChannel) {
 
   const state = { connection, player, channelId: voiceChannel.id };
   voiceConnections.set(guild.id, state);
-  console.log(`[Voice] Joined #${voiceChannel.name} in ${guild.name}`);
+
+  if (discordClient && !listeningGuilds.has(guild.id)) {
+    startListeningInChannel(connection, guild, discordClient);
+    listeningGuilds.add(guild.id);
+  }
+
   return state;
 }
 
-/* ── Leave the voice channel in a guild ── */
+/* Leave voice */
 export function leaveChannel(guildId) {
   const state = voiceConnections.get(guildId);
   if (!state) return false;
+
   state.connection.destroy();
-  /* voiceConnections map is cleaned up by the Destroyed listener */
-  console.log(`[Voice] Left voice channel in guild ${guildId}`);
   return true;
 }
 
 export function isInVoice(guildId) {
   const state = voiceConnections.get(guildId);
   if (!state) return false;
+
   const status = state.connection.state.status;
+
   return (
     status === VoiceConnectionStatus.Ready ||
     status === VoiceConnectionStatus.Signalling ||
@@ -192,116 +179,114 @@ export function getVoiceChannelId(guildId) {
   return voiceConnections.get(guildId)?.channelId ?? null;
 }
 
-/* ── Helper: play a single audio resource and wait for it to finish ── */
 function playAndWait(player, resource) {
   return new Promise((resolve) => {
     const onIdle = () => {
       player.removeListener("error", onError);
       resolve();
     };
-    const onError = (err) => {
-      console.error("[Voice] Playback error:", err.message);
+
+    const onError = () => {
       player.removeListener(AudioPlayerStatus.Idle, onIdle);
       resolve();
     };
+
     player.play(resource);
     player.once(AudioPlayerStatus.Idle, onIdle);
     player.once("error", onError);
   });
 }
 
-/* ── Speak text in a voice channel using Azure TTS (fallback: gtts) ── */
+/* Speak */
 export async function speak(guild, voiceChannel, text) {
   try {
     const state = await joinChannel(guild, voiceChannel);
 
     if (process.env.AZURE_SPEECH_KEY) {
-      /* Azure TTS: generate MP3 file, stream it into Discord */
       const filepath = `/tmp/voice_${Date.now()}.mp3`;
+
       try {
         await azureTtsToFile(text.substring(0, 5000), filepath);
-        const resource = createAudioResource(filepath, { inputType: StreamType.Arbitrary });
+        const resource = createAudioResource(filepath, {
+          inputType: StreamType.Arbitrary,
+        });
+
         await playAndWait(state.player, resource);
       } finally {
         unlink(filepath, () => {});
       }
     } else {
-      /* Fallback: node-gtts in chunks */
       const chunks = splitText(text);
+
       for (const chunk of chunks) {
         const stream = await gttsTtsStream(chunk);
-        const resource = createAudioResource(stream, { inputType: StreamType.Arbitrary });
+        const resource = createAudioResource(stream, {
+          inputType: StreamType.Arbitrary,
+        });
+
         await playAndWait(state.player, resource);
       }
     }
 
     return true;
-  } catch (err) {
-    console.error("[Voice] speak() failed:", err.message);
+  } catch {
     return false;
   }
 }
 
-/* ──────────────────────────────────────────────────────
-   VOICE LISTENING — listen to users speaking in a voice
-   channel, transcribe their audio, store voice logs and
-   fingerprints in Firebase for identity confirmation.
-────────────────────────────────────────────────────── */
+/* Voice Recording */
 
-/* Tracks users currently being recorded per guild — prevents duplicate subscriptions */
-const activeRecordings = new Map(); /* guildId_userId → true */
+const activeRecordings = new Map();
 
-/* Transcribe an MP3 file using OpenAI Whisper */
+/* Whisper transcription */
 async function transcribeWithWhisper(mp3FilePath) {
-  const openAiKey = process.env.OPENAI_API_KEY;
-  if (!openAiKey) return null;
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) return null;
 
-  try {
-    const { readFileSync } = await import("fs");
-    const audioBytes = readFileSync(mp3FilePath);
-    const audioBlob = new Blob([audioBytes], { type: "audio/mpeg" });
+  const { readFileSync } = await import("fs");
+  const audio = readFileSync(mp3FilePath);
 
-    const form = new FormData();
-    form.set("file", audioBlob, "audio.mp3");
-    form.set("model", "whisper-1");
-    form.set("language", "en");
+  const form = new FormData();
+  form.append("file", new Blob([audio], { type: "audio/mpeg" }), "audio.mp3");
+  form.append("model", "whisper-1");
 
-    const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${openAiKey}` },
-      body: form,
-    });
+  const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+    },
+    body: form,
+  });
 
-    if (!res.ok) {
-      const errText = await res.text();
-      console.error(`[VoiceListen] Whisper error ${res.status}:`, errText.substring(0, 150));
-      return null;
-    }
+  if (!res.ok) return null;
 
-    const data = await res.json();
-    return data.text?.trim() || null;
-  } catch (err) {
-    console.error("[VoiceListen] Whisper transcription failed:", err.message);
-    return null;
-  }
+  const data = await res.json();
+  return data.text?.trim() || null;
 }
 
-/* Convert raw PCM buffer → MP3 file via ffmpeg */
+/* PCM → MP3 */
 function pcmToMp3(pcmBuffer, outputPath) {
   return new Promise((resolve, reject) => {
     const inputPath = outputPath.replace(".mp3", ".pcm");
+
     writeFileSync(inputPath, pcmBuffer);
 
     execFile(
       ffmpegPath,
       [
         "-y",
-        "-f", "s16le",
-        "-ar", "48000",
-        "-ac", "2",
-        "-i", inputPath,
-        "-acodec", "libmp3lame",
-        "-b:a", "64k",
+        "-f",
+        "s16le",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
+        "-i",
+        inputPath,
+        "-acodec",
+        "libmp3lame",
+        "-b:a",
+        "64k",
         outputPath,
       ],
       (err) => {
@@ -313,9 +298,7 @@ function pcmToMp3(pcmBuffer, outputPath) {
   });
 }
 
-
 function extractTopics(text) {
-
   if (!text) return [];
 
   const keywords = [
@@ -328,189 +311,138 @@ function extractTopics(text) {
     "quantum",
     "physics",
     "space",
-    "military"
+    "military",
   ];
 
   const lower = text.toLowerCase();
 
-  return keywords.filter(k =>
-    lower.includes(k.toLowerCase())
-  );
+  return keywords.filter((k) => lower.includes(k.toLowerCase()));
 }
 
+/* Store transcript */
+async function storeVoiceLog(userId, user, guild, data) {
+  const timestamp = new Date().toISOString();
 
-/* Store a voice log entry + update voice fingerprint in Firebase */
-async function storeVoiceLog(userId, user, guild, { durationMs, transcript, sampleSizeBytes, sessionId }) {
+  const topics = extractTopics(data.transcript);
 
-  try {
+  const logEntry = {
+    discordId: userId,
+    username: user.username,
+    displayName: user.globalName || user.username,
+    guildId: guild.id,
+    guildName: guild.name,
+    timestamp,
+    ...data,
+    topics,
+  };
 
-    const timestamp = new Date().toISOString();
+  const fingerprintRef = firestore.collection("voice_fingerprints").doc(userId);
 
-    const topics = extractTopics(transcript);
+  await fingerprintRef.collection("audio_logs").add(logEntry);
 
-    const logEntry = {
+  await fingerprintRef.set(
+    {
       discordId: userId,
       username: user.username,
       displayName: user.globalName || user.username,
-      guildId: guild.id,
-      guildName: guild.name,
-      timestamp,
-      durationMs,
-      sampleSizeBytes,
-      transcript: transcript || null,
-      topics,
-      sessionId: sessionId || null
-    };
+      lastSeen: timestamp,
+      sampleCount: admin.firestore.FieldValue.increment(1),
+      totalDurationMs: admin.firestore.FieldValue.increment(data.durationMs),
+      lastTranscript: data.transcript || null,
+    },
+    { merge: true }
+  );
 
-    /* ------------------------
-       FIRESTORE (long memory)
-    ------------------------ */
-
-    const fingerprintRef = firestore
-      .collection("voice_fingerprints")
-      .doc(userId);
-
-    await fingerprintRef
-      .collection("audio_logs")
-      .add(logEntry);
-
-    await fingerprintRef.set(
-      {
-        discordId: userId,
-        username: user.username,
-        displayName: user.globalName || user.username,
-        avatarUrl: user.displayAvatarURL?.({ size: 256 }) ?? null,
-        lastSeen: timestamp,
-        sampleCount: admin.firestore.FieldValue.increment(1),
-        totalDurationMs: admin.firestore.FieldValue.increment(durationMs),
-        guilds: { [guild.id]: guild.name },
-        lastTranscript: transcript || null
-      },
-      { merge: true }
-    );
-
-    /* ------------------------
-       REALTIME DATABASE
-       (live conversation feed)
-    ------------------------ */
-
-    await realtimeDB
-      .ref(`live_voice/${guild.id}`)
-      .push(logEntry);
-
-    console.log(
-      `[VoiceListen] ${user.username}: "${transcript || "no transcript"}"`
-    );
-
-  } catch (err) {
-
-    console.error("[VoiceListen] storeVoiceLog error:", err.message);
-
-  }
+  await realtimeDB.ref(`live_voice/${guild.id}`).push(logEntry);
 }
 
-/* Process a captured Opus audio chunk array for one user utterance */
-async function processVoiceSample(userId, user, guild, channelId, opusChunks, durationMs, sessionId)
-  if (opusChunks.length === 0) return;
+/* Process voice sample */
+async function processVoiceSample(
+  userId,
+  user,
+  guild,
+  channelId,
+  opusChunks,
+  durationMs
+) {
+  if (!opusChunks.length) return;
 
-  const ts = Date.now();
-  const mp3Path = `/tmp/voice_${userId}_${ts}.mp3`;
+  const encoder = new OpusEncoder(48000, 2);
+  const pcmChunks = [];
 
-  try {
-    /* Decode Opus packets → raw PCM using @discordjs/opus */
-    const encoder = new OpusEncoder(48000, 2);
-    const pcmChunks = [];
-    for (const packet of opusChunks) {
-      try {
-        const decoded = encoder.decode(packet);
-        pcmChunks.push(decoded);
-      } catch (_) {
-        /* skip malformed packets */
-      }
-    }
-
-    if (pcmChunks.length === 0) return;
-
-    const pcmBuffer = Buffer.concat(pcmChunks);
-
-    /* Convert PCM → MP3 for Whisper */
-    await pcmToMp3(pcmBuffer, mp3Path);
-
-    /* Transcribe */
-    const transcript = await transcribeWithWhisper(mp3Path);
-
-    /* Store in Firebase — include sessionId so fingerprints link to the session */
-    await storeVoiceLog(userId, user, guild, {
-  durationMs,
-  transcript,
-  sampleSizeBytes: pcmBuffer.length,
-  sessionId,
-  channelId
-});
-  } catch (err) {
-    console.error(`[VoiceListen] processVoiceSample error for ${user.username}:`, err.message);
-  } finally {
-    unlink(mp3Path, () => {});
+  for (const packet of opusChunks) {
+    try {
+      const decoded = encoder.decode(packet);
+      pcmChunks.push(decoded);
+    } catch {}
   }
+
+  if (!pcmChunks.length) return;
+
+  const pcmBuffer = Buffer.concat(pcmChunks);
+
+  const mp3Path = `/tmp/voice_${userId}_${Date.now()}.mp3`;
+
+  await pcmToMp3(pcmBuffer, mp3Path);
+
+  const transcript = await transcribeWithWhisper(mp3Path);
+
+  await storeVoiceLog(userId, user, guild, {
+    channelId,
+    durationMs,
+    transcript,
+    sampleSizeBytes: pcmBuffer.length,
+  });
+
+  unlink(mp3Path, () => {});
 }
 
-/* ──────────────────────────────────────────────────────
-   START LISTENING IN CHANNEL
-   Call after joinChannel() to subscribe to all speaking
-   users, capture their audio, transcribe it, and store
-   voice logs + fingerprints in Firebase.
-────────────────────────────────────────────────────── */
-export function startListeningInChannel(connection, guild, discordClient, sessionId = null) {
+/* Start listening */
+export function startListeningInChannel(connection, guild, discordClient) {
+  if (!process.env.VOICE_RECORDING_ENABLED) return;
+
   const { receiver } = connection;
-  console.log(`[VoiceListen] Listening for voices in ${guild.name}${sessionId ? ` (session ${sessionId})` : ""}`);
 
   receiver.speaking.on("start", async (userId) => {
     const key = `${guild.id}_${userId}`;
     if (activeRecordings.has(key)) return;
 
-    try {
-      const user = await discordClient.users.fetch(userId).catch(() => null);
-      if (!user || user.bot) return;
+    const user = await discordClient.users.fetch(userId).catch(() => null);
+    if (!user || user.bot) return;
 
-      activeRecordings.set(key, true);
-      console.log(`[VoiceListen] Recording ${user.username}...`);
+    activeRecordings.set(key, true);
 
-      const opusStream = receiver.subscribe(userId, {
-        end: { behavior: EndBehaviorType.AfterSilence, duration: 1500 },
-      });
+    const opusStream = receiver.subscribe(userId, {
+      end: {
+        behavior: EndBehaviorType.AfterSilence,
+        duration: 1500,
+      },
+    });
 
-      const opusChunks = [];
-      const startTime = Date.now();
+    const opusChunks = [];
+    const start = Date.now();
 
-      opusStream.on("data", (chunk) => opusChunks.push(chunk));
+    opusStream.on("data", (chunk) => opusChunks.push(chunk));
 
-      opusStream.on("end", async () => {
-        activeRecordings.delete(key);
-        const durationMs = Date.now() - startTime;
+    opusStream.on("end", async () => {
+      activeRecordings.delete(key);
 
-        /* Ignore very short clips — noise/blips */
-        if (durationMs < 300 || opusChunks.length < 3) return;
+      const duration = Date.now() - start;
 
-        processVoiceSample(
-  userId,
-  user,
-  guild,
-  connection.joinConfig.channelId,
-  opusChunks,
-  durationMs,
-  sessionId
-).catch((err) =>
-          console.error("[VoiceListen] Async processVoiceSample error:", err.message)
-        );
-      });
+      if (duration < 300) return;
 
-      opusStream.on("error", (err) => {
-        activeRecordings.delete(key);
-        console.error(`[VoiceListen] Audio stream error for ${user.username}:`, err.message);
-      });
-    } catch (err) {
-      activeRecordings.delete(`${guild.id}_${userId}`);
-      console.error("[VoiceListen] speaking.start error:", err.message);
-    }
+      await processVoiceSample(
+        userId,
+        user,
+        guild,
+        connection.joinConfig.channelId,
+        opusChunks,
+        duration
+      );
+    });
+
+    opusStream.on("error", () => {
+      activeRecordings.delete(key);
+    });
   });
-}
+    }
