@@ -118,10 +118,12 @@ export async function joinChannel(guild, voiceChannel, discordClient = null) {
   });
 
   try {
-    await entersState(connection, VoiceConnectionStatus.Ready, 15000);
-  } catch {
+  await entersState(connection, VoiceConnectionStatus.Ready, 45000);
+} catch {
+  if (connection.state.status !== VoiceConnectionStatus.Ready) {
     connection.destroy();
     throw new Error(`Voice connection failed for ${voiceChannel.name}`);
+   }
   }
 
   connection.on(VoiceConnectionStatus.Disconnected, async () => {
