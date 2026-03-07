@@ -145,12 +145,19 @@ export async function joinChannel(guild, voiceChannel, discordClient = null) {
   connection.subscribe(player);
 
   const state = { connection, player, channelId: voiceChannel.id };
-  voiceConnections.set(guild.id, state);
 
-  if (discordClient && !listeningGuilds.has(guild.id)) {
-    startListeningInChannel(connection, guild, discordClient);
-    listeningGuilds.add(guild.id);
-  }
+  await entersState(connection, VoiceConnectionStatus.Ready, 45000);
+
+const state = { connection, player, channelId: voiceChannel.id };
+voiceConnections.set(guild.id, state);
+
+console.log(`[Voice] Connected to ${voiceChannel.name}`);
+
+if (discordClient && !listeningGuilds.has(guild.id)) {
+  console.log(`[VoiceRecognition] Listening in #${voiceChannel.name}`);
+  startListeningInChannel(connection, guild, discordClient);
+  listeningGuilds.add(guild.id);
+}
 
   return state;
 }
