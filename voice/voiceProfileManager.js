@@ -1,7 +1,7 @@
-import { getFirestore } from "firebase-admin/firestore";
+import { getFirestore } from "../firebase.js";
 import { generateVoiceEmbedding } from "./voiceFingerprint.js";
 
-const db = getFirestore();
+const db = firestore;
 
 export async function enrollVoice(userId, audioBuffer) {
 
