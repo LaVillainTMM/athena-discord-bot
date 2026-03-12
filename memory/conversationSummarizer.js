@@ -1,7 +1,7 @@
-import { getFirestore } from "firebase-admin/firestore";
+import { getFirestore } from "../firebase.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const db = getFirestore();
+const db = firestore;
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
