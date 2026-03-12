@@ -1,4 +1,4 @@
-import { getFirestore } from "firebase-admin/firestore";
+import { getFirestore } from "../firebase.js";
 
 import { summarizeChannel } from "../memory/conversationSummarizer.js";
 import { buildPersonalityModel } from "../analysis/personalityProfiler.js";
@@ -8,7 +8,7 @@ import { mapRelationships } from "../analysis/relationshipMapper.js";
 import { evaluateGoals } from "../strategy/athenaStrategyEngine.js";
 import { createGoal } from "../strategy/athenaGoalManager.js";
 
-const db = getFirestore();
+const db = firestore;
 
 let cognitiveLoopActive = false;
 
