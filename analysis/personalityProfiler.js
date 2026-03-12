@@ -1,6 +1,6 @@
-import { getFirestore } from "firebase-admin/firestore";
+import { getFirestore } from "../firebase.js";
 
-const db = getFirestore();
+const db = firestore;
 
 export async function buildPersonalityModel(userId) {
 
