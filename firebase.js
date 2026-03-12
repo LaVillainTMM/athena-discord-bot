@@ -74,7 +74,6 @@ if (!admin.apps.length) {
   });
 }
 
-const firestore = admin.firestore();
 const realtimeDB = admin.database();
 
 firestore.settings({
