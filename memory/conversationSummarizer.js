@@ -1,4 +1,4 @@
-import { getFirestore } from "../firebase.js";
+import { Firestore } from "../firebase.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const db = firestore;
