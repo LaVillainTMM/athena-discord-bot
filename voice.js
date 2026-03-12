@@ -144,13 +144,13 @@ export async function joinChannel(guild, voiceChannel, discordClient = null) {
   const player = createAudioPlayer();
   connection.subscribe(player);
 
-  const state = { connection, player, channelId: voiceChannel.id };
-
-  await entersState(connection, VoiceConnectionStatus.Ready, 45000);
-
 const state = { connection, player, channelId: voiceChannel.id };
+
+await entersState(connection, VoiceConnectionStatus.Ready, 45000);
+
 voiceConnections.set(guild.id, state);
 
+  
 console.log(`[Voice] Connected to ${voiceChannel.name}`);
 
 if (discordClient && !listeningGuilds.has(guild.id)) {
