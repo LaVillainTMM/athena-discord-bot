@@ -1,5 +1,14 @@
 import "dotenv/config";
 import { Client, GatewayIntentBits, Events, Partials, ChannelType } from "discord.js";
+import { startAthenaCognitiveCore } from "./core/athenaCognitiveCore.js";
+
+client.once("ready", () => {
+
+   console.log("Athena online.");
+
+   startAthenaCognitiveCore(10);
+
+});
 
 import {
   joinChannel,
