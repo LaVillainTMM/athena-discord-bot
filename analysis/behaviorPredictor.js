@@ -1,7 +1,14 @@
-import { getFirestore } from "../firebase.js";
+// File: analysis/behaviorPredictor.js
+import { firestore } from "../firebase.js";
 
-const db = firestore;
-
+export async function predictUserBehavior(channelId, username) {
+  const db = firestore;
+  const snapshot = await db.collection("messages")
+      .where("channelId", "==", channelId)
+      .orderBy("timestamp", "desc")
+      .limit(100)
+      .get();
+    
 export async function predictUserBehavior(userId) {
 
     const profileDoc = await db.collection("athena_user_profiles").doc(userId).get();
