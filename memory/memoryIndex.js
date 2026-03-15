@@ -1,13 +1,12 @@
-import { getFirestore } from "../firebase.js";
+// File: memory/memoryIndex.js
+import { firestore } from "../firebase.js";
 
 const db = firestore;
 
-export async function searchMemory(keyword) {
-
-    const snapshot = await db.collection("athena_memory")
-        .where("summary", ">=", keyword)
-        .get();
-
+export async function searchMemory(queryText) {
+  const snapshot = await db.collection("athena_memory")
+      .get();
+    
     const results = [];
 
     snapshot.forEach(doc => {
