@@ -1,5 +1,15 @@
-import { Firestore } from "../firebase.js";
+// File: memory/conversationSummarizer.js
+import { firestore } from "../firebase.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+
+const db = firestore;
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+export async function summarizeChannel(channelId) {
+  const snapshot = await db.collection("messages")
+      .limit(100)
+      .get();
+
 
 const db = firestore;
 
