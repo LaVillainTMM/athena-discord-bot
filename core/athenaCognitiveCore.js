@@ -1,4 +1,6 @@
-import { getFirestore } from "../firebase.js";
+
+// File: core/athenaCognitiveCore.js
+import { firestore } from "../firebase.js";
 
 import { summarizeChannel } from "../memory/conversationSummarizer.js";
 import { buildPersonalityModel } from "../analysis/personalityProfiler.js";
