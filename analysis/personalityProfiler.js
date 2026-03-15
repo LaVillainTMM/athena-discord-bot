@@ -1,4 +1,15 @@
-import { getFirestore } from "../firebase.js";
+// File: analysis/personalityProfiler.js
+import { firestore } from "../firebase.js";
+
+export async function buildPersonalityModel(channelId, username) {
+  const db = firestore;
+  const snapshot = await db.collection("messages")
+      .where("channelId", "==", channelId)
+      .orderBy("timestamp", "desc")
+      .limit(100)
+      .get();
+
+}
 
 const db = firestore;
 
