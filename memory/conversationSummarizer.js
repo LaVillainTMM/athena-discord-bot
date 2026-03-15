@@ -10,19 +10,6 @@ export async function summarizeChannel(channelId) {
       .limit(100)
       .get();
 
-
-const db = firestore;
-
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-
-export async function summarizeChannel(channelId) {
-
-    const snapshot = await db.collection("messages")
-        .where("channelId", "==", channelId)
-        .orderBy("timestamp", "desc")
-        .limit(100)
-        .get();
-
     let text = "";
 
     snapshot.forEach(doc => {
