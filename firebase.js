@@ -1,3 +1,4 @@
+// File: firebase.js
 import admin from "firebase-admin";
 
 if (!admin.apps.length) {
@@ -5,8 +6,6 @@ if (!admin.apps.length) {
 }
 
 const firestore = admin.firestore();
-
-export { firestore };
 
 function buildFromEnvVars() {
   const projectId = process.env.FIREBASE_PROJECT_ID;
@@ -51,26 +50,19 @@ function parseServiceAccount(raw) {
 
 if (!admin.apps.length) {
   let serviceAccount = buildFromEnvVars();
-
   if (!serviceAccount) {
     serviceAccount = parseServiceAccount(process.env.FIREBASE_SERVICE_ACCOUNT);
   }
 
   if (!serviceAccount || !serviceAccount.project_id) {
-    console.error("[Firebase] Could not load service account credentials.");
-    console.error("[Firebase] Option 1: Set FIREBASE_SERVICE_ACCOUNT as a single-line JSON string");
-    console.error("[Firebase] Option 2: Set these env vars:");
-    console.error("FIREBASE_PROJECT_ID");
-    console.error("FIREBASE_CLIENT_EMAIL");
-    console.error("FIREBASE_PRIVATE_KEY");
+    console.error("Service account not provided or invalid. Exiting.");
     process.exit(1);
   }
 
   console.log("[Firebase] Initialized for project:", serviceAccount.project_id);
-
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
-    databaseURL: process.env.FIREBASE_DATABASE_URL || "https://athenaai-memory-default-rtdb.firebaseio.com",
+    databaseURL: process.env.FIREBASE_DB_URL,
   });
 }
 
