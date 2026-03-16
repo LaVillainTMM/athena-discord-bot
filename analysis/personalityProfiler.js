@@ -1,16 +1,9 @@
 // File: analysis/personalityProfiler.js
 import { firestore } from "../firebase.js";
 
-export async function buildPersonalityModel(channelId, username) {
-  const db = firestore;
-  const snapshot = await db.collection("messages")
-      .where("channelId", "==", channelId)
-      .orderBy("timestamp", "desc")
-      .limit(100)
-      .get();
-
-}
 export async function buildPersonalityModel(userId) {
+
+    const db = firestore;
 
     const snapshot = await db.collection("messages")
         .where("userId", "==", userId)
@@ -22,7 +15,7 @@ export async function buildPersonalityModel(userId) {
 
     snapshot.forEach(doc => {
 
-        const msg = doc.data().content;
+        const msg = doc.data().content || "";
 
         messageCount++;
 
@@ -32,14 +25,12 @@ export async function buildPersonalityModel(userId) {
 
     });
 
-    const curiosity = questionCount / messageCount;
+    const curiosity = messageCount > 0 ? questionCount / messageCount : 0;
 
     const profile = {
-
         curiosity,
         analytical: curiosity > 0.3,
         persistence: messageCount > 50
-
     };
 
     await db.collection("athena_user_profiles").doc(userId).set(profile);
