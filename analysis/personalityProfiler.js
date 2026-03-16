@@ -9,9 +9,6 @@ export async function buildPersonalityModel(channelId, username) {
       .limit(100)
       .get();
 
-
-const db = firestore;
-
 export async function buildPersonalityModel(userId) {
 
     const snapshot = await db.collection("messages")
