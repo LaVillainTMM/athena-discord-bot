@@ -9,6 +9,7 @@ export async function buildPersonalityModel(channelId, username) {
       .limit(100)
       .get();
 
+}
 export async function buildPersonalityModel(userId) {
 
     const snapshot = await db.collection("messages")
