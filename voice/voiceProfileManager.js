@@ -1,18 +1,13 @@
-import { getFirestore } from "../firebase.js";
-import { generateVoiceEmbedding } from "./voiceFingerprint.js";
+// File: voice/voiceProfileManager.js
+import { firestore } from "../firebase.js";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const db = firestore;
-
-export async function enrollVoice(userId, audioBuffer) {
-
-    const embedding = generateVoiceEmbedding(audioBuffer);
-
-    await db.collection("athena_voice_profiles").doc(userId).set({
-
-        athenaUserId: userId,
-        embedding: embedding,
-        createdAt: new Date()
-
-    });
-
+export async function getOrCreateVoiceProfile(userId) {
+  const db = firestore;
+  const docRef = db.collection("voice_profiles").doc(userId);
+  const doc = await docRef.get();
+  if (!doc.exists) {
+    await docRef.set({ userId });
+  }
+  return docRef;
 }
