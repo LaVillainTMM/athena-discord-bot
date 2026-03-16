@@ -9,7 +9,6 @@ export async function buildPersonalityModel(channelId, username) {
       .limit(100)
       .get();
 
-}
 
 const db = firestore;
 
