@@ -8,6 +8,9 @@ export async function predictUserBehavior(channelId, username) {
       .orderBy("timestamp", "desc")
       .limit(100)
       .get();
+     
+
+}
     
 export async function predictUserBehavior(userId) {
 
