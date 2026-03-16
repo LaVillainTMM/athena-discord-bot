@@ -1,7 +1,14 @@
-import { getFirestore } from "../firebase.js";
-import { generateVoiceEmbedding } from "./voiceFingerprint.js";
+// File: voice/speakerIdentification.js
+import { firestore } from "../firebase.js";
+import { generateVoiceFingerprint } from "./voiceFingerprint.js";
 
-const db = firestore;
+export async function identifySpeaker(audioData) {
+  const db = firestore;
+  const fingerprint = await generateVoiceFingerprint(audioData);
+  const snapshot = await db.collection("voice_profiles")
+      .where("fingerprint", "==", fingerprint)
+      .get();
+    
 
 function cosineSimilarity(a, b) {
 
