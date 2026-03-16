@@ -59,7 +59,9 @@ if (!admin.apps.length) {
 
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
-    databaseURL: process.env.FIREBASE_DB_URL,
+    databaseURL:
+      process.env.FIREBASE_DB_URL ||
+      `https://${serviceAccount.project_id}-default-rtdb.firebaseio.com`,
   });
 
 }
