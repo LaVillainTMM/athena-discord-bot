@@ -1,12 +1,6 @@
 // File: firebase.js
 import admin from "firebase-admin";
 
-if (!admin.apps.length) {
-  admin.initializeApp();
-}
-
-const firestore = admin.firestore();
-
 function buildFromEnvVars() {
   const projectId = process.env.FIREBASE_PROJECT_ID;
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
@@ -49,7 +43,9 @@ function parseServiceAccount(raw) {
 }
 
 if (!admin.apps.length) {
+
   let serviceAccount = buildFromEnvVars();
+
   if (!serviceAccount) {
     serviceAccount = parseServiceAccount(process.env.FIREBASE_SERVICE_ACCOUNT);
   }
@@ -60,12 +56,15 @@ if (!admin.apps.length) {
   }
 
   console.log("[Firebase] Initialized for project:", serviceAccount.project_id);
+
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
     databaseURL: process.env.FIREBASE_DB_URL,
   });
+
 }
 
+const firestore = admin.firestore();
 const realtimeDB = admin.database();
 
 firestore.settings({
