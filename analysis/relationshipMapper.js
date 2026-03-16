@@ -8,9 +8,7 @@ export async function mapRelationships(channelId, username) {
       .orderBy("timestamp", "desc")
       .limit(100)
       .get();
-
- const db = firestore;
-
+  
 export async function mapRelationships() {
 
     const snapshot = await db.collection("messages").get();
