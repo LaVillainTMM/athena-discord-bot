@@ -9,6 +9,7 @@ export async function identifySpeaker(audioData) {
       .where("fingerprint", "==", fingerprint)
       .get();
     
+}
 
 function cosineSimilarity(a, b) {
 
