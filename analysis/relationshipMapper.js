@@ -1,29 +1,42 @@
-// File: analysis/relationshipMapper.js
 import { firestore } from "../firebase.js";
 
-export async function mapRelationships() {
+const db = firestore;
 
-    const db = firestore;
+export async function mapRelationships(channelId = null, username = null) {
 
-    const snapshot = await db.collection("messages").get();
+  let query = db.collection("messages");
 
-    const relationships = {};
+  if (channelId) {
+    query = query.where("channelId", "==", channelId);
+  }
 
-    snapshot.forEach(doc => {
+  query = query.orderBy("timestamp", "desc").limit(100);
 
-        const data = doc.data();
+  const snapshot = await query.get();
 
-        const user = data.userId;
-        const channel = data.channelId;
+  const relationships = {};
 
-        if (!relationships[user]) {
-            relationships[user] = new Set();
-        }
+  snapshot.forEach(doc => {
+    const data = doc.data();
+    if (!data) return;
 
-        relationships[user].add(channel);
+    const user = data.userId || data.authorId;
+    const channel = data.channelId;
 
-    });
+    if (!user || !channel) return;
 
-    return relationships;
+    if (!relationships[user]) {
+      relationships[user] = new Set();
+    }
 
+    relationships[user].add(channel);
+  });
+
+  const result = {};
+
+  for (const user in relationships) {
+    result[user] = Array.from(relationships[user]);
+  }
+
+  return result;
 }
