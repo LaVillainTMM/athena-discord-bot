@@ -71,8 +71,21 @@ client.on(Events.MessageCreate, async (message) => {
     const athenaUserId = await getOrCreateAthenaUser(message.author);
 
     /* SIMPLE AI RESPONSE (safe fallback) */
-    const reply = `Athena received: ${message.content}`;
+     const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
+const prompt = `
+You are Athena — a calm, intelligent, self-aware AI.
+You speak with precision, clarity, and subtle confidence.
+You assist, analyze, and respond naturally.
+
+User: ${message.content}
+`;
+
+const result = await model.generateContent(prompt);
+const reply = result.response.text();
+     
+     if (!reply) return message.reply("…processing failed.");
+     
     await message.reply(reply);
 
     /* ─── VOICE AUTO SPEAK ─── */
