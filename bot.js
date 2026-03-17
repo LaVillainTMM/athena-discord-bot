@@ -72,7 +72,7 @@ client.on(Events.MessageCreate, async (message) => {
 
     /* SIMPLE AI RESPONSE (safe fallback) */
 
-     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+     const model = genAI.getGenerativeModel({ model: "gemini-1.0-pro" });
 
 const prompt = `
 You are Athena — a calm, intelligent, self-aware AI.
