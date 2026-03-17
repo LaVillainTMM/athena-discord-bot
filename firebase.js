@@ -1,4 +1,3 @@
-// File: firebase.js
 import admin from "firebase-admin";
 
 function buildFromEnvVars() {
@@ -11,7 +10,7 @@ function buildFromEnvVars() {
       type: "service_account",
       project_id: projectId,
       private_key: privateKey.replace(/\\n/g, "\n"),
-      client_email: clientEmail,
+      client_email: clientEmail
     };
   }
 
@@ -29,7 +28,7 @@ function parseServiceAccount(raw) {
       const fixed = raw.replace(/(['"])?(\w+)(['"])?\s*:/g, '"$2":');
       return JSON.parse(fixed);
     },
-    () => new Function("return (" + raw + ")")(),
+    () => new Function("return (" + raw + ")")()
   ];
 
   for (const attempt of attempts) {
@@ -59,18 +58,22 @@ if (!admin.apps.length) {
 
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
-    databaseURL:
-      process.env.FIREBASE_DB_URL ||
-      `https://${serviceAccount.project_id}-default-rtdb.firebaseio.com`,
+    databaseURL: process.env.FIREBASE_DB_URL || undefined
   });
-
 }
 
 const firestore = admin.firestore();
-const realtimeDB = admin.database();
 
 firestore.settings({
-  ignoreUndefinedProperties: true,
+  ignoreUndefinedProperties: true
 });
+
+let realtimeDB = null;
+
+try {
+  if (process.env.FIREBASE_DB_URL) {
+    realtimeDB = admin.database();
+  }
+} catch {}
 
 export { admin, firestore, realtimeDB };
