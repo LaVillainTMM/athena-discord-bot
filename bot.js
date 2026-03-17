@@ -48,7 +48,7 @@ if (!process.env.GOOGLE_GENAI_API_KEY) throw new Error("GOOGLE_GENAI_API_KEY mis
 /* ─────────────────────────────
    AI INIT
 ───────────────────────────── */
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GENAI_API_KEY);
+const genAI = new GoogleGenAI({ apiKey: process.env.GOOGLE_GENAI_API_KEY });
 
 /* ─────────────────────────────
    READY EVENT (NOW SAFE)
