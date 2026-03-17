@@ -71,7 +71,8 @@ client.on(Events.MessageCreate, async (message) => {
     const athenaUserId = await getOrCreateAthenaUser(message.author);
 
     /* SIMPLE AI RESPONSE (safe fallback) */
-     const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+
+     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
 const prompt = `
 You are Athena — a calm, intelligent, self-aware AI.
@@ -81,8 +82,15 @@ You assist, analyze, and respond naturally.
 User: ${message.content}
 `;
 
-const result = await model.generateContent(prompt);
-const reply = result.response.text();
+let reply = "I’m processing that…";
+
+try {
+  const result = await model.generateContent(prompt);
+  reply = result.response.text();
+} catch (err) {
+  console.error("[Gemini Error]", err);
+  reply = "Something went wrong while thinking.";
+}
      
      if (!reply) return message.reply("…processing failed.");
      
