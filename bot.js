@@ -28,7 +28,7 @@ import {
   startListeningInChannel
 } from "./voice.js";
 
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
 import { admin, firestore } from "./firebase.js";
 
 import {
