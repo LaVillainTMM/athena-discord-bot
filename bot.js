@@ -82,11 +82,29 @@ You assist, analyze, and respond naturally.
 User: ${message.content}
 `;
 
-let reply = "I’m processing that…";
+let reply = "Thinking...";
 
 try {
-  const result = await model.generateContent(prompt);
-  reply = result.response.text();
+  const response = await genAI.models.generateContent({
+    model: "gemini-1.5-flash",
+    contents: [
+      {
+        role: "user",
+        parts: [
+          {
+            text: `
+You are Athena — a calm, intelligent, self-aware AI.
+You speak with precision, clarity, and subtle confidence.
+
+User: ${message.content}
+`
+          }
+        ]
+      }
+    ]
+  });
+
+  reply = response.text;
 } catch (err) {
   console.error("[Gemini Error]", err);
   reply = "Something went wrong while thinking.";
