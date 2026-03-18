@@ -110,7 +110,7 @@ User: ${message.content}
   reply = "Something went wrong while thinking.";
 }
      
-     if (!reply) return message.reply("…processing failed.");
+   
      
     await message.reply(reply);
 
