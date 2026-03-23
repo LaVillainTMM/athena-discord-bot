@@ -89,11 +89,31 @@ Personality Modeling
 Updates personality profiles
 */
 
-async function runPersonalityAnalysis() {
+async function runMemoryAnalysis() {
 
     const snapshot = await db.collection("messages")
+        .orderBy("createdAt", "desc")
         .limit(100)
         .get();
+
+    const channels = new Set();
+
+    snapshot.forEach(doc => {
+        const data = doc.data();
+        if (data.channelId) {
+            channels.add(data.channelId);
+        }
+    });
+
+    for (const channelId of channels) {
+        try {
+            await summarizeChannel(channelId);
+            console.log("[Athena Memory Updated]", channelId);
+        } catch (err) {
+            console.error("[Memory Error]", err);
+        }
+    }
+}
 
     const users = new Set();
 
