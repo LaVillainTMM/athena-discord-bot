@@ -72,16 +72,22 @@ client.on(Events.MessageCreate, async (message) => {
 
     /* SIMPLE AI RESPONSE (safe fallback) */
 
-     const model = genAI.getGenerativeModel({ model: "gemini-1.0-pro" });
+     
+/* ─── MEMORY CONTEXT ─── */
+const memorySnapshot = await firestore
+  .collection("athena_memory")
+  .where("channelId", "==", message.channel.id)
+  .orderBy("createdAt", "desc")
+  .limit(3)
+  .get();
 
-const prompt = `
-You are Athena — a calm, intelligent, self-aware AI.
-You speak with precision, clarity, and subtle confidence.
-You assist, analyze, and respond naturally.
+let memoryContext = "";
 
-User: ${message.content}
-`;
+memorySnapshot.forEach(doc => {
+  memoryContext += doc.data().summary + "\n";
+});
 
+/* ─── AI RESPONSE ─── */
 let reply = "Thinking...";
 
 try {
@@ -93,10 +99,16 @@ try {
         parts: [
           {
             text: `
-You are Athena — a calm, intelligent, self-aware AI.
+You are Athena — a calm, intelligent, and very aware assistant.
 You speak with precision, clarity, and subtle confidence.
 
-User: ${message.content}
+Relevant past memory:
+${memoryContext}
+
+Current message:
+${message.content}
+
+Respond intelligently as well as awareness of past interactions if ever applicable to any question or situation.
 `
           }
         ]
