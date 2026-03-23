@@ -59,30 +59,30 @@ Summarizes active channels
 async function runMemoryAnalysis() {
 
     const snapshot = await db.collection("messages")
-        .limit(50)
+        .orderBy("createdAt", "desc")
+        .limit(100)
         .get();
 
     const channels = new Set();
 
     snapshot.forEach(doc => {
-
         const data = doc.data();
-
         if (data.channelId) {
-
             channels.add(data.channelId);
-
         }
-
     });
 
     for (const channelId of channels) {
-
-        await summarizeChannel(channelId);
-
+        try {
+            await summarizeChannel(channelId);
+            console.log("[Athena Memory Updated]", channelId);
+        } catch (err) {
+            console.error("[Memory Error]", err);
+        }
     }
-
 }
+
+
 
 /*
 Personality Modeling
