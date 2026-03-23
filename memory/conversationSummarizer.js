@@ -1,38 +1,38 @@
 // File: memory/conversationSummarizer.js
 import { firestore } from "../firebase.js";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
+
+const genAI = new GoogleGenAI({
+  apiKey: process.env.GOOGLE_GENAI_API_KEY
+});
 
 const db = firestore;
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 export async function summarizeChannel(channelId) {
-  const snapshot = await db.collection("messages")
+  try {
+    const snapshot = await db
+      .collection("messages")
+      .where("channelId", "==", channelId) // 🔥 IMPORTANT FIX
       .limit(100)
       .get();
 
     let text = "";
 
     snapshot.forEach(doc => {
-
-        text += doc.data().content + "\n";
-
+      text += doc.data().content + "\n";
     });
 
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    if (!text) return "No messages to summarize.";
 
-    const result = await model.generateContent(
-        "Summarize the following conversation:\n" + text
-    );
+    /* ✅ NEW SDK CALL */
+    const result = await genAI.models.generateContent({
+      model: "gemini-1.5-flash",
+      contents: `Summarize the following conversation:\n${text}`
+    });
 
-    const summary = result.response.text();
+    const summary = result.text || "No summary generated.";
 
     await db.collection("athena_memory").add({
-
-        channelId,
-        summary,
-        createdAt: new Date()
-
-    });
-
-    return summary;
-}
+      channelId,
+      summary,
+      createdAt: new Date()
