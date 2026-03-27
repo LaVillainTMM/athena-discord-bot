@@ -37,3 +37,11 @@ export async function summarizeChannel(channelId) {
       summary,
       createdAt: new Date()
     });
+
+    return summary;
+
+  } catch (error) {
+    console.error("Summarization error:", error);
+    return "Error generating summary.";
+  }
+}
