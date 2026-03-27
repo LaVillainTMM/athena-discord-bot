@@ -112,7 +112,6 @@ Updates personality profiles
             console.error("[Memory Error]", err);
         }
     }
-}
 
     const users = new Set();
 
