@@ -133,7 +133,6 @@ Updates personality profiles
 
     }
 
-}
 
 /*
 Behavior Prediction
