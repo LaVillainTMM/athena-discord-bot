@@ -36,3 +36,4 @@ export async function summarizeChannel(channelId) {
       channelId,
       summary,
       createdAt: new Date()
+    });
