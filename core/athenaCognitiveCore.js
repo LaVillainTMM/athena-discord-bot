@@ -89,7 +89,6 @@ Personality Modeling
 Updates personality profiles
 */
 
-async function runMemoryAnalysis() {
 
     const snapshot = await db.collection("messages")
         .orderBy("createdAt", "desc")
