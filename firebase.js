@@ -10,10 +10,9 @@ function buildFromEnvVars() {
       type: "service_account",
       project_id: projectId,
       private_key: privateKey.replace(/\\n/g, "\n"),
-      client_email: clientEmail
+      client_email: clientEmail,
     };
   }
-
   return null;
 }
 
@@ -28,7 +27,7 @@ function parseServiceAccount(raw) {
       const fixed = raw.replace(/(['"])?(\w+)(['"])?\s*:/g, '"$2":');
       return JSON.parse(fixed);
     },
-    () => new Function("return (" + raw + ")")()
+    () => new Function("return (" + raw + ")")(),
   ];
 
   for (const attempt of attempts) {
@@ -37,12 +36,10 @@ function parseServiceAccount(raw) {
       if (result && result.project_id) return result;
     } catch {}
   }
-
   return null;
 }
 
 if (!admin.apps.length) {
-
   let serviceAccount = buildFromEnvVars();
 
   if (!serviceAccount) {
@@ -50,7 +47,13 @@ if (!admin.apps.length) {
   }
 
   if (!serviceAccount || !serviceAccount.project_id) {
-    console.error("Service account not provided or invalid. Exiting.");
+    console.error("[Firebase] Could not load service account credentials.");
+    console.error("[Firebase] Option 1: Set FIREBASE_SERVICE_ACCOUNT as a single-line JSON string");
+    console.error("[Firebase]   Copy your .json file, remove all newlines, paste as one line");
+    console.error("[Firebase] Option 2: Set these 3 separate env vars instead:");
+    console.error("[Firebase]   FIREBASE_PROJECT_ID=your-project-id");
+    console.error("[Firebase]   FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxx@project.iam.gserviceaccount.com");
+    console.error("[Firebase]   FIREBASE_PRIVATE_KEY=<your-private-key-from-service-account-json>");
     process.exit(1);
   }
 
@@ -58,22 +61,12 @@ if (!admin.apps.length) {
 
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
-    databaseURL: process.env.FIREBASE_DB_URL || undefined
+    databaseURL: "https://athenaai-memory-default-rtdb.firebaseio.com",
   });
 }
 
-const firestore = admin.firestore();
+const db = admin.firestore();
+const rtdb = admin.database();
 
-firestore.settings({
-  ignoreUndefinedProperties: true
-});
-
-let realtimeDB = null;
-
-try {
-  if (process.env.FIREBASE_DB_URL) {
-    realtimeDB = admin.database();
-  }
-} catch {}
-
-export { admin, firestore, realtimeDB };
+export { admin, db, rtdb };
+export const firestore = db;
