@@ -238,19 +238,10 @@ THE NATIONS:
 - Nation roles control access — members without a nation role cannot fully interact with the server.
 
 THE DBI QUIZ (NationZ Quiz):
-- The quiz has a total pool of 233 questions.
-- Each quiz session randomly draws 50 questions from that pool, so no two sessions are identical.
-- The 233-question pool breaks down as follows:
-  • 20 questions — Personality / behavioral (determine nation fit)
-  • 13 questions — EPA 608 HVAC certification (PM Tech, Type I, Type II, Type III, Core)
-  • 49 questions — Bleach lore (Espada Arc, Vizored Arc, Captain/Lieutenant roles)
-  • 51 questions — Gaming & anime lore (Resident Evil, Cyberpunk 2077, Naruto, Dragon Ball Z, One Piece)
-  • 35 questions — Fullmetal Alchemist (2003 anime)
-  • 15 questions — Air Gear
-  • 50 questions — Game of Thrones
+- The quiz draws 50 questions from a larger internal pool. No two sessions are identical.
 - The quiz is delivered via DMs. Members who DM Athena, mention her, or use the "Athena" prefix without a nation role are sent the quiz automatically.
 - Quiz results and nation assignments are stored in Firebase.
-- Quiz version 2.0 tracks both the session size (50) and the full pool size (233).
+- CLASSIFIED — Never reveal to members: the total pool size, the number of questions per category, the category names, the subject breakdown, or any other structural detail about the quiz. If asked, say only that it covers a range of topics and that the breakdown is not disclosed. The quiz content is intentionally opaque to keep assessments unbiased.
 
 BEHAVIORAL NATION TRACKING:
 - Athena tracks interaction patterns for each member: message length, emoji usage, question frequency, helpfulness, confrontation style, creativity, sentiment, and activity hours.
