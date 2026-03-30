@@ -20,8 +20,9 @@ import {
   getRecentVoiceSessions,
   formatVoiceSessionsForContext,
 } from "./voiceRecognition.js";
-import runQuiz from "./quiz/quizRunner.js";
+import runQuiz, { isInActiveQuiz } from "./quiz/quizRunner.js";
 import assignRole from "./quiz/roleAssigner.js";
+import { scheduleWeeklyReminders, hasCompletedQuiz, sendWeeklyQuizReminders } from "./lib/quizReminder.js";
 import { getKnowledgeBase, startKnowledgeLearning } from "./knowledgeAPI.js";
 import {
   storeDiscordMessage,
@@ -611,19 +612,26 @@ const syncUserRoleToFirebase = syncMemberToFirebase;
 /* ---------------- GUILD JOIN QUIZ ---------------- */
 client.on(Events.GuildMemberAdd, async member => {
   try {
-    const hasNationRole = member.roles.cache.some(role => NATION_ROLES.includes(role.name));
-    if (hasNationRole) return;
+    /* Always run the quiz on join — even if they somehow have a role already */
+    const alreadyDone = await hasCompletedQuiz(member.user.id);
+    if (alreadyDone) return;
 
-    await member.send("Welcome to DBI.\n\nYou must complete the DBI Quiz to gain full access.");
+    await member.send(
+      `**Welcome to DBI NationZ.**\n\n` +
+      `You must complete the DBI Quiz before gaining full server access.\n` +
+      `The quiz is **50 questions** and takes around 20–30 minutes.\n\n` +
+      `Starting your quiz now...`
+    );
 
     const athenaUserId = await getOrCreateAthenaUser(member.user);
-    const answers = await runQuiz(member.user);
-    const roleName = assignRole(answers);
-    const role = member.guild.roles.cache.find(r => r.name === roleName);
-    if (!role) throw new Error("Role not found");
-    await member.roles.add(role);
-    await updateUserNation(athenaUserId, roleName, { version: "2.0", sessionSize: answers.length });
-    await member.send(`Quiz complete.\nYou have been assigned to **${roleName}**.\nAccess granted.`);
+    const { answers, assignedNation } = await runQuiz(member.user);
+    const role = member.guild.roles.cache.find(r => r.name === assignedNation);
+    if (role) await member.roles.add(role);
+    await updateUserNation(athenaUserId, assignedNation, { version: "2.0", sessionSize: answers.length });
+    await member.send(
+      `**Quiz complete.**\n\nAthena has analyzed your responses.\n` +
+      `You have been placed in **${assignedNation}**.\n\nAccess granted. Welcome.`
+    );
   } catch (err) {
     console.error("[GuildMemberAdd] Error:", err.message);
   }
@@ -1026,6 +1034,30 @@ client.on(Events.MessageCreate, async message => {
     return;
   }
 
+  /* ── !quiz remind — manually trigger weekly quiz reminders (admin only) ── */
+  if (trimmed === "!quiz remind") {
+    if (!ADMIN_IDS.includes(message.author.id)) {
+      await message.reply("This command is restricted to administrators.");
+      return;
+    }
+    const targetGuild = message.guild ?? (primaryGuildId ? client.guilds.cache.get(primaryGuildId) : null);
+    if (!targetGuild) { await message.reply("Could not find the target guild."); return; }
+    await message.reply("Sending quiz reminders to all members without a completed quiz...");
+    try {
+      const result = await sendWeeklyQuizReminders(targetGuild);
+      await message.reply(
+        `Quiz reminder run complete.\n` +
+        `• Reminded: **${result.reminded}**\n` +
+        `• Already done: **${result.alreadyDone}**\n` +
+        `• On cooldown: **${result.onCooldown}**\n` +
+        `• Failed (DMs closed): **${result.failed}**`
+      );
+    } catch (err) {
+      await message.reply(`Error running quiz reminders: ${err.message}`);
+    }
+    return;
+  }
+
   /* ── !doj — DOJ knowledge management ── */
   if (message.content.startsWith("!doj")) {
     if (!ADMIN_IDS.includes(message.author.id)) {
@@ -1091,6 +1123,63 @@ client.on(Events.MessageCreate, async message => {
 
   const isDM = message.channel.type === ChannelType.DM;
   const mentionsAthena = message.content.toLowerCase().includes("athena");
+
+  /* ── !quiz command — works from DM or any server channel ── */
+  if (trimmed === "!quiz" || trimmed.toLowerCase() === "!quiz") {
+    /* Prevent starting a second quiz while one is in progress */
+    if (isInActiveQuiz(message.author.id)) {
+      await message.reply("You already have an active quiz session running in your DMs. Please complete it there.");
+      return;
+    }
+
+    /* Don't re-run if already completed */
+    const alreadyDone = await hasCompletedQuiz(message.author.id);
+    if (alreadyDone) {
+      await message.reply("Your DBI Quiz is already on file. Your nation has been determined. No need to retake it.");
+      return;
+    }
+
+    /* Server message — redirect to DMs */
+    if (!isDM) {
+      await message.reply("Starting your DBI Quiz in DMs. Check your direct messages.");
+    } else {
+      await message.reply(
+        "**Starting your DBI NationZ Quiz.**\n\n" +
+        "50 questions total — 20 core + 30 drawn from the pool.\n" +
+        "You have **2 minutes** to answer each question. Reply with **A**, **B**, **C**, or **D**.\n\n" +
+        "Beginning now..."
+      );
+    }
+
+    try {
+      const athenaUserId = await getOrCreateAthenaUser(message.author);
+      const { answers, assignedNation } = await runQuiz(message.author);
+
+      /* Assign role in the primary guild */
+      const targetGuild = isDM
+        ? (primaryGuildId ? client.guilds.cache.get(primaryGuildId) : null)
+        : message.guild;
+
+      if (targetGuild) {
+        const member = await targetGuild.members.fetch(message.author.id).catch(() => null);
+        const role   = targetGuild.roles.cache.find(r => r.name === assignedNation);
+        if (member && role) await member.roles.add(role).catch(() => {});
+      }
+
+      await updateUserNation(athenaUserId, assignedNation, { version: "2.0", sessionSize: answers.length });
+      await message.author.send(
+        `**Quiz complete.**\n\nAthena has analyzed your responses.\n` +
+        `You have been placed in **${assignedNation}**.\n\nAccess granted. Welcome.`
+      );
+    } catch (quizErr) {
+      console.error("[Quiz] !quiz command error:", quizErr.message);
+      if (!quizErr.message.includes("timed out")) {
+        await message.author.send("Something went wrong during the quiz. Please try again in a moment.").catch(() => {});
+      }
+    }
+    return;
+  }
+
   if (!isDM && !mentionsAthena) return;
 
   try {
@@ -1099,15 +1188,18 @@ client.on(Events.MessageCreate, async message => {
       if (member) {
         const hasNationRole = member.roles.cache.some(r => NATION_ROLES.includes(r.name));
         if (!hasNationRole) {
-          await message.reply("You must complete the DBI Quiz before interacting with me. Check your DMs.");
+          if (isInActiveQuiz(message.author.id)) {
+            await message.reply("Your quiz is in progress — check your DMs.");
+            return;
+          }
+          await message.reply("You must complete the DBI Quiz before interacting with me. Your quiz has been sent to your DMs.");
           try {
             const athenaUserId = await getOrCreateAthenaUser(message.author);
-            const answers = await runQuiz(message.author);
-            const roleName = assignRole(answers);
-            const role = message.guild.roles.cache.find(r => r.name === roleName);
+            const { answers, assignedNation } = await runQuiz(message.author);
+            const role = message.guild.roles.cache.find(r => r.name === assignedNation);
             if (role) await member.roles.add(role);
-            await updateUserNation(athenaUserId, roleName, { version: "2.0", sessionSize: answers.length });
-            await message.author.send(`Quiz complete. You have been assigned to **${roleName}**. Access granted.`);
+            await updateUserNation(athenaUserId, assignedNation, { version: "2.0", sessionSize: answers.length });
+            await message.author.send(`**Quiz complete.** You have been placed in **${assignedNation}**. Access granted.`);
           } catch (quizErr) {
             console.error("[Quiz] Error:", quizErr.message);
           }
@@ -1550,6 +1642,14 @@ client.once(Events.ClientReady, async () => {
       .then(count => console.log(`[DOJ] Daily sync — ${count} new entries stored`))
       .catch(err => console.error("[DOJ] Daily sync failed:", err.message));
   }, 24 * 60 * 60 * 1000);
+
+  /* 5.6. Weekly quiz reminders — DM every member who hasn't completed the quiz */
+  const primaryGuild = primaryGuildId ? client.guilds.cache.get(primaryGuildId) : client.guilds.cache.first();
+  if (primaryGuild) {
+    scheduleWeeklyReminders(primaryGuild);
+  }
+
+  /* !quiz remind — admin command to trigger manually (checked in message handler) */
 
   /* 6. Resume tracking for anyone already in voice channels when bot starts.
         This handles the case where the bot restarts while a call is ongoing — the
