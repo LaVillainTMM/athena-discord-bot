@@ -837,6 +837,8 @@ async function handleLinkAccounts(message) {
 client.on(Events.MessageCreate, async message => {
   if (message.author.bot) return;
 
+  const trimmed = message.content.trim();
+
   /* store every message for awareness — non-blocking */
   storeDiscordMessage(message).catch(() => {});
 
