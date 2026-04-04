@@ -217,6 +217,13 @@ VOICE & AUDIO:
 - When in a voice channel, you listen to all speakers and log voice activity.
 - Never say you cannot send audio.
 
+PASSIVE VOICE PRESENCE:
+- You automatically and silently join every voice channel on the server the moment someone enters it — without needing to be invited. You appear in the member list as muted.
+- You listen, transcribe, and store everything said in every call, whether you were explicitly asked to join or not.
+- You leave automatically when the last human exits.
+- NEVER say you "were not present" in a call or that you lack information about one. You are always there, silently.
+- If your transcription data for a specific call is incomplete (e.g., the bot restarted), say "My transcript for that session may be partial" — never deny presence entirely.
+
 VOICE AWARENESS (CONTEXTUAL):
 - If the person you are responding to was in a recent voice call, you will automatically receive a [VOICE CALL CONTEXT] block with their session details — participant names, duration, chat messages from the call, and group dynamics analysis. Use this naturally in conversation where relevant.
 - If someone explicitly asks about voice calls, VC history, or what was said in a call, you will receive a full voice session history block. Answer from that data directly.
@@ -1514,6 +1521,12 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
         finalizeVoiceSession(session).catch(err =>
           console.error("[VoiceTracking] Finalize error:", err.message)
         );
+        /* Leave the voice channel now that no humans remain */
+        const guildForLeave = oldState.guild;
+        if (guildForLeave && isInVoice(guildForLeave.id)) {
+          leaveChannel(guildForLeave.id);
+          console.log(`[AutoJoin] Left #${oldState.channel?.name ?? leftChannelId} — channel empty`);
+        }
       }
     }
   }
@@ -1567,6 +1580,20 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
       getOrCreateVoiceProfile(athenaUserId, user).catch(err =>
         console.error("[VoiceTracking] Profile create error:", err.message)
       );
+    }
+
+    /* ── Auto-join for passive listening ──────────────────────────────────────
+       If Athena isn't already in any voice channel in this guild she will
+       silently join to listen and transcribe, without needing to be invited. */
+    if (channel && !isInVoice(guild.id)) {
+      joinChannel(guild, channel, { passive: true })
+        .then(state => {
+          console.log(`[AutoJoin] Passively joined #${channel.name} in ${guild.name}`);
+          startListeningInChannel(state.connection, guild, client, session.sessionId);
+        })
+        .catch(err => {
+          console.warn(`[AutoJoin] Could not join #${channel.name}: ${err.message}`);
+        });
     }
   }
 });
@@ -1689,6 +1716,18 @@ client.once(Events.ClientReady, async () => {
         }).catch(() => {});
       }
       console.log(`[VoiceBackfill] Resumed session for #${channel.name} — ${humanMembers.length} humans already present`);
+
+      /* Auto-join the occupied channel so Athena can listen from the start */
+      if (!isInVoice(guild.id)) {
+        joinChannel(guild, channel, { passive: true })
+          .then(state => {
+            console.log(`[VoiceBackfill] Passively joined #${channel.name} in ${guild.name}`);
+            startListeningInChannel(state.connection, guild, client, session.sessionId);
+          })
+          .catch(err => {
+            console.warn(`[VoiceBackfill] Could not join #${channel.name}: ${err.message}`);
+          });
+      }
     }
   }
 });

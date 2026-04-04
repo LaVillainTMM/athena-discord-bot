@@ -96,12 +96,24 @@ async function gttsTtsStream(text) {
 }
 
 /* ── Join a voice channel ── */
-export async function joinChannel(guild, voiceChannel) {
+/* passive = true → selfMute so Athena can listen without appearing as a speaker */
+export async function joinChannel(guild, voiceChannel, { passive = false } = {}) {
   const existing = voiceConnections.get(guild.id);
   if (existing) {
+    /* Already in this exact channel — nothing to do */
     if (existing.channelId === voiceChannel.id) return existing;
-    existing.connection.destroy();
-    voiceConnections.delete(guild.id);
+    /* If existing connection is passive and the new request is explicit, allow upgrade */
+    if (existing.passive && !passive) {
+      existing.connection.destroy();
+      voiceConnections.delete(guild.id);
+    } else if (!existing.passive) {
+      /* Explicit connection already exists — move to new channel */
+      existing.connection.destroy();
+      voiceConnections.delete(guild.id);
+    } else {
+      /* Both passive — already in different channel, skip */
+      return existing;
+    }
   }
 
   /* ── Permission pre-check ── */
@@ -122,10 +134,10 @@ export async function joinChannel(guild, voiceChannel) {
 
   const connection = joinVoiceChannel({
     channelId: voiceChannel.id,
-    guildId: guild.id,
+    guildId:   guild.id,
     adapterCreator: guild.voiceAdapterCreator,
     selfDeaf: false,
-    selfMute: false,
+    selfMute: passive, /* muted when passively listening — unmuted when explicitly joined */
   });
 
   try {
@@ -191,9 +203,9 @@ export async function joinChannel(guild, voiceChannel) {
   const player = createAudioPlayer();
   connection.subscribe(player);
 
-  const state = { connection, player, channelId: voiceChannel.id };
+  const state = { connection, player, channelId: voiceChannel.id, passive };
   voiceConnections.set(guild.id, state);
-  console.log(`[Voice] Joined #${voiceChannel.name} in ${guild.name}`);
+  console.log(`[Voice] Joined #${voiceChannel.name} in ${guild.name} (${passive ? "passive/silent" : "active"})`);
   return state;
 }
 
