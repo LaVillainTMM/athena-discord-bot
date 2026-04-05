@@ -1124,6 +1124,13 @@ client.on(Events.MessageCreate, async message => {
   const isDM = message.channel.type === ChannelType.DM;
   const mentionsAthena = message.content.toLowerCase().includes("athena");
 
+  /* ── Quiz answer guard ─────────────────────────────────────────────────────
+     When a user is mid-quiz the quizRunner's awaitMessages() collector owns
+     their DM messages. If we let them fall through here, Athena fires a second
+     response asking what A/B/C/D means. Block ALL non-command DMs while a quiz
+     is active — the quiz runner handles them. ── */
+  if (isDM && isInActiveQuiz(message.author.id) && !trimmed.startsWith("!")) return;
+
   /* ── !quiz command — works from DM or any server channel ── */
   if (trimmed === "!quiz" || trimmed.toLowerCase() === "!quiz") {
     /* Prevent starting a second quiz while one is in progress */
