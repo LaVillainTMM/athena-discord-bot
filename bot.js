@@ -36,6 +36,7 @@ import { joinChannel, leaveChannel, isInVoice, getVoiceChannelId, speak, startLi
 import { sendAudioMessage, isAudioRequest, splitResponseForAudio } from "./audioMessage.js";
 import { syncLatestDojPressReleases, searchAndStoreDoj, getDojKnowledgeSummary } from "./lib/dojKnowledge.js";
 import { storeMemberVisualProfile, identifyMembersInImage } from "./visualIdentity.js";
+import { isWeatherQuery, extractLocation, fetchWeather, formatWeatherContext } from "./lib/weather.js";
 
 if (!process.env.DISCORD_TOKEN) throw new Error("DISCORD_TOKEN missing");
 if (!process.env.GOOGLE_GENAI_API_KEY) throw new Error("GOOGLE_GENAI_API_KEY missing");
@@ -708,13 +709,31 @@ async function getAthenaResponse(content, athenaUserId, discordUserId, channel, 
     ? `[KNOWLEDGE BASE — ${knowledgeEntries.length} entries]\n${knowledgeEntries.slice(0, 20).join("\n")}\n[END KNOWLEDGE BASE]\n\n`
     : "";
 
+  /* ── Live weather lookup ──────────────────────────────────────────────────
+     If the user asked about weather, fetch real-time data and inject it as a
+     context block. Athena will incorporate the data into her response. */
+  let weatherBlock = "";
+  if (isWeatherQuery(content) && process.env.OPENWEATHER_API_KEY) {
+    const location = extractLocation(content);
+    if (location) {
+      try {
+        const w = await fetchWeather(location);
+        weatherBlock = formatWeatherContext(w);
+        console.log(`[Weather] Fetched live data for "${location}" → ${w.tempF}°F, ${w.description}`);
+      } catch (err) {
+        console.warn(`[Weather] Lookup failed for "${location}": ${err.message}`);
+        weatherBlock = `[LIVE WEATHER DATA]\nWeather lookup failed for "${location}": ${err.message}. Use general knowledge instead.\n[END LIVE WEATHER DATA]\n\n`;
+      }
+    }
+  }
+
   /* Include voice call context only if the sender was in a recent call,
      or if this was an explicit voice session query (already in serverContext) */
   const voiceAwareness = voiceSessionRequest
     ? ""  /* explicit query already handled in serverContext — no duplication */
     : await buildVoiceContextForUser(effectiveGuildId, discordUserId);
 
-  const fullMessage = liveContext + knowledgeBlock + voiceAwareness + serverContext + content;
+  const fullMessage = liveContext + knowledgeBlock + weatherBlock + voiceAwareness + serverContext + content;
 
   let reply;
   try {
