@@ -727,7 +727,22 @@ async function getAthenaResponse(content, athenaUserId, discordUserId, channel, 
     });
     const result = await chat.sendMessage(fullMessage);
     reply = result.response.text();
-    console.log("[Gemini] Response:", reply.substring(0, 80) + "...");
+
+    /* Empty response — typically happens when Google Search grounding consumes
+       the output budget without producing visible text. Retry once without
+       grounding tools so we still answer the question. */
+    if (!reply || !reply.trim()) {
+      console.warn("[Gemini] Empty grounded response — retrying without search tools.");
+      const ungroundedModel = genAI.getGenerativeModel({
+        model: activeModelName,
+        systemInstruction: ATHENA_SYSTEM_PROMPT,
+      });
+      const retryResult = await ungroundedModel.generateContent(fullMessage);
+      reply = retryResult.response.text();
+      console.log("[Gemini] Ungrounded retry returned:", (reply || "").substring(0, 80) + "...");
+    } else {
+      console.log("[Gemini] Response:", reply.substring(0, 80) + "...");
+    }
   } catch (error) {
     console.error("[Gemini] API error:", error.message);
     activeModel = null;
@@ -741,7 +756,11 @@ async function getAthenaResponse(content, athenaUserId, discordUserId, channel, 
     }
   }
 
-  await saveMessage(athenaUserId, discordUserId, content, reply);
+  /* Only persist a real response — empty/whitespace replies would poison
+     future context and cause the same dead fallback to repeat forever. */
+  if (reply && reply.trim()) {
+    await saveMessage(athenaUserId, discordUserId, content, reply);
+  }
   return reply;
 }
 
