@@ -262,6 +262,7 @@ export async function recordParticipantJoin(sessionId, { athenaUserId, discordId
     console.log(`[Firestore:voice_sessions] Recorded join ${displayName} → ${sessionId}`);
   } catch (err) {
     console.error(`[Firestore:voice_sessions] recordParticipantJoin FAILED for ${displayName} → ${sessionId}:`, err.message);
+    throw err; /* let callers' .catch handle it; do not silently succeed */
   }
 }
 
@@ -343,6 +344,7 @@ export async function finalizeVoiceSession(session) {
     console.log(`[Firestore:voice_sessions] Finalized session ${session.sessionId} (${durationSeconds}s, ${enrichedParticipants.length} participants)`);
   } catch (err) {
     console.error(`[Firestore:voice_sessions] finalizeVoiceSession FAILED for ${session.sessionId}:`, err.message);
+    throw err; /* propagate so callers' .catch logs the failure path explicitly */
   }
 
   /* Build contact list */
