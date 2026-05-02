@@ -1672,8 +1672,8 @@ client.once(Events.ClientReady, async () => {
   const PROBE_DOC_ID = `__startup_probe__${process.pid}_${Date.now()}`;
   const probeStarted = Date.now();
   for (const col of PROBE_COLLECTIONS) {
+    const ref = firestore.collection(col).doc(PROBE_DOC_ID);
     try {
-      const ref = firestore.collection(col).doc(PROBE_DOC_ID);
       await ref.set({
         _probe:    true,
         bootedAt:  admin.firestore.FieldValue.serverTimestamp(),
@@ -1685,10 +1685,13 @@ client.once(Events.ClientReady, async () => {
         console.error(`[Firestore:${col}] Self-test FAIL — write succeeded but read returned empty.`);
         continue;
       }
-      await ref.delete();
       console.log(`[Firestore:${col}] Self-test PASS (write+read+delete)`);
     } catch (err) {
       console.error(`[Firestore:${col}] Self-test FAIL —`, err.message);
+    } finally {
+      /* Best-effort cleanup so sentinel docs never linger in production
+         collections, even if read or set partially failed. */
+      try { await ref.delete(); } catch {}
     }
   }
   console.log(`[Firestore] Startup probes completed in ${Date.now() - probeStarted}ms`);
@@ -1696,47 +1699,53 @@ client.once(Events.ClientReady, async () => {
   /* Supplemental single-doc round-trip on a dedicated diagnostics path.
      This proves Firestore connectivity end-to-end on a non-production
      collection so any orphan docs are isolated from real data. */
-  try {
+  {
     const diagRef = firestore.collection("_diagnostics").doc("startup");
-    await diagRef.set({
-      at:    admin.firestore.FieldValue.serverTimestamp(),
-      pid:   process.pid,
-      host:  process.env.HOSTNAME || "unknown",
-      probeId: PROBE_DOC_ID,
-    });
-    const diagSnap = await diagRef.get();
-    if (diagSnap.exists) {
-      await diagRef.delete();
-      console.log(`[Firestore:_diagnostics/startup] Round-trip PASS (write+read+delete)`);
-    } else {
-      console.error(`[Firestore:_diagnostics/startup] Round-trip FAIL — wrote but read empty.`);
+    try {
+      await diagRef.set({
+        at:    admin.firestore.FieldValue.serverTimestamp(),
+        pid:   process.pid,
+        host:  process.env.HOSTNAME || "unknown",
+        probeId: PROBE_DOC_ID,
+      });
+      const diagSnap = await diagRef.get();
+      if (diagSnap.exists) {
+        console.log(`[Firestore:_diagnostics/startup] Round-trip PASS (write+read+delete)`);
+      } else {
+        console.error(`[Firestore:_diagnostics/startup] Round-trip FAIL — wrote but read empty.`);
+      }
+    } catch (err) {
+      console.error(`[Firestore:_diagnostics/startup] Round-trip FAIL —`, err.message);
+    } finally {
+      try { await diagRef.delete(); } catch {}
     }
-  } catch (err) {
-    console.error(`[Firestore:_diagnostics/startup] Round-trip FAIL —`, err.message);
   }
 
   /* Probe the actual nested voice-session path used at runtime
      (athena_ai/voice_sessions/sessions). The top-level voice_sessions probe
      above only validates root-collection access; this probe validates the
      real write path used by voiceRecognition.js. */
-  try {
+  {
     const nestedRef = firestore
       .collection("athena_ai").doc("voice_sessions")
       .collection("sessions").doc(PROBE_DOC_ID);
-    await nestedRef.set({
-      _probe:   true,
-      bootedAt: admin.firestore.FieldValue.serverTimestamp(),
-      pid:      process.pid,
-    });
-    const nestedSnap = await nestedRef.get();
-    if (nestedSnap.exists) {
-      await nestedRef.delete();
-      console.log(`[Firestore:athena_ai/voice_sessions/sessions] Self-test PASS (write+read+delete)`);
-    } else {
-      console.error(`[Firestore:athena_ai/voice_sessions/sessions] Self-test FAIL — write succeeded but read returned empty.`);
+    try {
+      await nestedRef.set({
+        _probe:   true,
+        bootedAt: admin.firestore.FieldValue.serverTimestamp(),
+        pid:      process.pid,
+      });
+      const nestedSnap = await nestedRef.get();
+      if (nestedSnap.exists) {
+        console.log(`[Firestore:athena_ai/voice_sessions/sessions] Self-test PASS (write+read+delete)`);
+      } else {
+        console.error(`[Firestore:athena_ai/voice_sessions/sessions] Self-test FAIL — write succeeded but read returned empty.`);
+      }
+    } catch (err) {
+      console.error(`[Firestore:athena_ai/voice_sessions/sessions] Self-test FAIL —`, err.message);
+    } finally {
+      try { await nestedRef.delete(); } catch {}
     }
-  } catch (err) {
-    console.error(`[Firestore:athena_ai/voice_sessions/sessions] Self-test FAIL —`, err.message);
   }
 
   /* 1. Sync ALL guild members → full contact cards (bots excluded) */
