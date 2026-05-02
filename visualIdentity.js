@@ -82,6 +82,7 @@ If this is not a photo of a real person (e.g., it is an anime avatar, cartoon, o
         },
         { merge: true }
       );
+      console.log(`[Firestore:member_visual_profiles] Stored NON_HUMAN avatar for ${user.username}`);
       return;
     }
 

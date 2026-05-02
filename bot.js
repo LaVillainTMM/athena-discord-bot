@@ -1855,6 +1855,18 @@ client.once(Events.ClientReady, async () => {
         guardianInFlight.add(channelId);
         joinChannel(guild, channel, { passive: true })
           .then(state => {
+            /* joinChannel() may return an existing passive connection in a
+               *different* channel within the same guild. In that case do NOT
+               attach a listener to the wrong connection — that would stack
+               duplicate receivers. Verify channel match first. */
+            if (state.channelId !== channelId) {
+              console.warn(
+                `[VoiceGuardian] joinChannel returned existing connection in different channel (${state.channelId} ≠ ${channelId}); skipping listener attach for #${channel.name}.`
+              );
+              guardianBackoff.delete(channelId);
+              guardianLastDelay.delete(channelId);
+              return;
+            }
             startListeningInChannel(state.connection, guild, client, session.sessionId);
             guardianBackoff.delete(channelId);
             guardianLastDelay.delete(channelId);
