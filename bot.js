@@ -1700,7 +1700,7 @@ client.once(Events.ClientReady, async () => {
      This proves Firestore connectivity end-to-end on a non-production
      collection so any orphan docs are isolated from real data. */
   {
-    const diagRef = firestore.collection("_diagnostics").doc("startup");
+    const diagRef = firestore.collection("_diagnostics").doc(`startup_${process.pid}_${Date.now()}`);
     try {
       await diagRef.set({
         at:    admin.firestore.FieldValue.serverTimestamp(),
