@@ -123,8 +123,21 @@ async function gttsTtsStream(text) {
 export async function joinChannel(guild, voiceChannel, { passive = false } = {}) {
   const existing = voiceConnections.get(guild.id);
   if (existing) {
-    /* Already in this exact channel — nothing to do */
-    if (existing.channelId === voiceChannel.id) return existing;
+    /* Already in this exact channel — return only if the connection is healthy.
+       If the underlying connection is in Disconnected/Destroyed/unknown state,
+       force a fresh join instead of handing back a dead connection. */
+    if (existing.channelId === voiceChannel.id) {
+      const status = existing.connection.state.status;
+      const healthy =
+        status === VoiceConnectionStatus.Ready ||
+        status === VoiceConnectionStatus.Signalling ||
+        status === VoiceConnectionStatus.Connecting;
+      if (healthy) return existing;
+      console.warn(`[Voice] Existing connection for #${voiceChannel.name} is ${status} — destroying and re-establishing.`);
+      intentionalLeaves.add(guild.id);
+      try { existing.connection.destroy(); } catch {}
+      voiceConnections.delete(guild.id);
+    } else
     /* If existing connection is passive and the new request is explicit, allow upgrade.
        Mark these destroys as intentional so the Destroyed handler does NOT
        trigger immediate recovery (which would re-join the OLD channel and
@@ -138,8 +151,8 @@ export async function joinChannel(guild, voiceChannel, { passive = false } = {})
       intentionalLeaves.add(guild.id);
       existing.connection.destroy();
       voiceConnections.delete(guild.id);
-    } else {
-      /* Both passive — already in different channel, skip */
+    } else if (voiceConnections.has(guild.id)) {
+      /* Both passive, different channel — return existing rather than thrash. */
       return existing;
     }
   }
@@ -544,6 +557,16 @@ async function processVoiceSample(userId, user, guild, opusChunks, durationMs, s
    voice logs + fingerprints in Firebase.
 ────────────────────────────────────────────────────── */
 export function startListeningInChannel(connection, guild, discordClient, sessionId = null) {
+  /* Idempotency: never attach the speaking listener twice to the same
+     connection — that would double-record audio and write duplicate
+     fingerprints. We tag the connection object with a hidden flag once
+     attached. */
+  if (connection.__athenaListenerAttached) {
+    console.log(`[VoiceListen] Listener already attached to this connection in ${guild.name} — skipping duplicate.`);
+    return;
+  }
+  connection.__athenaListenerAttached = true;
+
   const { receiver } = connection;
   console.log(`[VoiceListen] Listening for voices in ${guild.name}${sessionId ? ` (session ${sessionId})` : ""}`);
 
