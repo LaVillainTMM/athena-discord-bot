@@ -1619,7 +1619,9 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
       discordId: user.id,
       displayName: user.globalName || user.username,
       joinTime: Date.now(),
-    }).catch(() => {});
+    }).catch(err =>
+      console.warn(`[Voice] recordParticipantJoin failed for ${user.username} → ${session.sessionId}: ${err.message}`)
+    );
 
     /* Ensure voice recognition profile exists for this user */
     if (athenaUserId) {
@@ -1853,7 +1855,9 @@ client.once(Events.ClientReady, async () => {
           discordId: member.user.id,
           displayName: member.user.globalName || member.user.username,
           joinTime: Date.now(),
-        }).catch(() => {});
+        }).catch(err =>
+          console.warn(`[VoiceBackfill] recordParticipantJoin failed for ${member.user.username} → ${session.sessionId}: ${err.message}`)
+        );
       }
       console.log(`[VoiceBackfill] Resumed session for #${channel.name} — ${humanMembers.length} humans already present`);
 
