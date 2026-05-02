@@ -1715,6 +1715,30 @@ client.once(Events.ClientReady, async () => {
     console.error(`[Firestore:_diagnostics/startup] Round-trip FAIL —`, err.message);
   }
 
+  /* Probe the actual nested voice-session path used at runtime
+     (athena_ai/voice_sessions/sessions). The top-level voice_sessions probe
+     above only validates root-collection access; this probe validates the
+     real write path used by voiceRecognition.js. */
+  try {
+    const nestedRef = firestore
+      .collection("athena_ai").doc("voice_sessions")
+      .collection("sessions").doc(PROBE_DOC_ID);
+    await nestedRef.set({
+      _probe:   true,
+      bootedAt: admin.firestore.FieldValue.serverTimestamp(),
+      pid:      process.pid,
+    });
+    const nestedSnap = await nestedRef.get();
+    if (nestedSnap.exists) {
+      await nestedRef.delete();
+      console.log(`[Firestore:athena_ai/voice_sessions/sessions] Self-test PASS (write+read+delete)`);
+    } else {
+      console.error(`[Firestore:athena_ai/voice_sessions/sessions] Self-test FAIL — write succeeded but read returned empty.`);
+    }
+  } catch (err) {
+    console.error(`[Firestore:athena_ai/voice_sessions/sessions] Self-test FAIL —`, err.message);
+  }
+
   /* 1. Sync ALL guild members → full contact cards (bots excluded) */
   for (const [, guild] of client.guilds.cache) {
     try {
