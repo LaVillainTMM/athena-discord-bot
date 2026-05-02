@@ -1668,7 +1668,8 @@ client.once(Events.ClientReady, async () => {
     "member_visual_profiles",
     "discord_quiz_results",
   ];
-  const PROBE_DOC_ID = "__startup_probe__";
+  /* Unique per-instance probe id so concurrent bot instances don't collide. */
+  const PROBE_DOC_ID = `__startup_probe__${process.pid}_${Date.now()}`;
   const probeStarted = Date.now();
   for (const col of PROBE_COLLECTIONS) {
     try {

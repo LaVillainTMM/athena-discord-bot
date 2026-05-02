@@ -317,6 +317,10 @@ export function leaveChannel(guildId) {
   const state = voiceConnections.get(guildId);
   if (!state) return false;
   intentionalLeaves.add(guildId);
+  /* Clear listener registry for this channel so it doesn't accumulate stale
+     entries across the bot's lifetime. Auto-recovery won't fire here because
+     the leave is marked intentional. */
+  if (state.channelId) activeListeners.delete(state.channelId);
   state.connection.destroy();
   /* voiceConnections map is cleaned up by the Destroyed listener */
   console.log(`[Voice] Left voice channel in guild ${guildId}`);
