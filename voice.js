@@ -21,6 +21,20 @@ import { admin, firestore } from "./firebase.js";
 /* Map of guildId → { connection, player, channelId } */
 const voiceConnections = new Map();
 
+/* Channels Athena was kicked from (4014) — guardian honors this for 5min.
+   Map<channelId, expiresAtMs>. Exported for bot.js guardian. */
+export const recentEvictions = new Map();
+
+export function isChannelEvicted(channelId) {
+  const exp = recentEvictions.get(channelId);
+  if (!exp) return false;
+  if (Date.now() > exp) {
+    recentEvictions.delete(channelId);
+    return false;
+  }
+  return true;
+}
+
 /* ── Azure TTS config (mirrors audioMessage.js) ── */
 const AZURE_VOICE         = "en-GB-SoniaNeural";
 const AZURE_OUTPUT_FORMAT = "audio-24khz-160kbitrate-mono-mp3";
@@ -164,9 +178,11 @@ export async function joinChannel(guild, voiceChannel, { passive = false } = {})
       reason === VoiceConnectionDisconnectReason.WebSocketClose &&
       closeCode === 4014
     ) {
-      /* 4014 = forcibly removed (kicked / moved). The voice gateway will not
-         auto-reconnect — destroy and let the bot.js guardian re-join if humans remain. */
-      console.warn(`[Voice] 4014 close — destroying so guardian can re-establish.`);
+      /* 4014 = forcibly removed (kicked / moved). Discord won't auto-reconnect.
+         Mark the channel as "evicted" for 5 minutes so the bot.js guardian doesn't
+         immediately re-join — that respected the mod's intent to kick her. */
+      console.warn(`[Voice] 4014 close in #${voiceChannel.name} — honoring eviction for 5 min.`);
+      recentEvictions.set(voiceChannel.id, Date.now() + 5 * 60 * 1000);
       try { connection.destroy(); } catch {}
       return;
     }

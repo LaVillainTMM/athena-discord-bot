@@ -32,7 +32,7 @@ import {
   getKnownChannels,
   getActivityPeaks,
 } from "./athenaDiscord.js";
-import { joinChannel, leaveChannel, isInVoice, getVoiceChannelId, speak, startListeningInChannel } from "./voice.js";
+import { joinChannel, leaveChannel, isInVoice, getVoiceChannelId, speak, startListeningInChannel, isChannelEvicted } from "./voice.js";
 import { sendAudioMessage, isAudioRequest, splitResponseForAudio } from "./audioMessage.js";
 import { syncLatestDojPressReleases, searchAndStoreDoj, getDojKnowledgeSummary } from "./lib/dojKnowledge.js";
 import { storeMemberVisualProfile, identifyMembersInImage } from "./visualIdentity.js";
@@ -1800,13 +1800,22 @@ client.once(Events.ClientReady, async () => {
   /* 7. ── Voice guardian ─────────────────────────────────────────────────────
         Every 30 seconds, walk every active session and verify Athena still has
         a live voice connection in that channel. If she dropped (network blip,
-        gateway closed the connection, manual !leave forgot), and humans are
-        still in the channel, silently re-establish a fresh passive connection.
-        This is the safety net that prevents "Athena dropping from calls". */
+        gateway closed the connection) and humans are still present, silently
+        re-establish a fresh passive connection. Skips channels Athena was
+        kicked from (4014 → 5min cooldown) and avoids stacking concurrent join
+        attempts via an in-flight set. */
+  const guardianInFlight = new Set(); /* channelIds with a pending join */
+  const guardianBackoff  = new Map(); /* channelId → nextAttemptMs after failure */
+
   setInterval(async () => {
     for (const [, guild] of client.guilds.cache) {
       for (const [channelId, session] of activeSessions) {
         if (session.guildId !== guild.id) continue;
+        if (guardianInFlight.has(channelId)) continue;
+        if (isChannelEvicted(channelId)) continue;
+
+        const backoffUntil = guardianBackoff.get(channelId) ?? 0;
+        if (Date.now() < backoffUntil) continue;
 
         const channel = guild.channels.cache.get(channelId);
         if (!channel || channel.type !== ChannelType.GuildVoice) continue;
@@ -1816,18 +1825,31 @@ client.once(Events.ClientReady, async () => {
 
         const connectedHere =
           isInVoice(guild.id) && getVoiceChannelId(guild.id) === channelId;
-        if (connectedHere) continue;
+        if (connectedHere) {
+          guardianBackoff.delete(channelId);
+          continue;
+        }
 
         console.log(
           `[VoiceGuardian] Athena missing from #${channel.name} (${humansPresent} humans present) — re-establishing.`
         );
-        try {
-          const state = await joinChannel(guild, channel, { passive: true });
-          startListeningInChannel(state.connection, guild, client, session.sessionId);
-          console.log(`[VoiceGuardian] Re-established passive listen in #${channel.name}`);
-        } catch (err) {
-          console.warn(`[VoiceGuardian] Failed to re-join #${channel.name}: ${err.message}`);
-        }
+        guardianInFlight.add(channelId);
+        joinChannel(guild, channel, { passive: true })
+          .then(state => {
+            startListeningInChannel(state.connection, guild, client, session.sessionId);
+            guardianBackoff.delete(channelId);
+            console.log(`[VoiceGuardian] Re-established passive listen in #${channel.name}`);
+          })
+          .catch(err => {
+            /* Exponential-ish backoff: 1min after first fail, capped at 10min */
+            const prev = guardianBackoff.get(channelId) ?? 0;
+            const nextDelay = prev ? Math.min(10 * 60_000, (prev - Date.now() || 60_000) * 2) : 60_000;
+            guardianBackoff.set(channelId, Date.now() + nextDelay);
+            console.warn(`[VoiceGuardian] Failed to re-join #${channel.name}: ${err.message} — backing off ${Math.round(nextDelay/1000)}s`);
+          })
+          .finally(() => {
+            guardianInFlight.delete(channelId);
+          });
       }
     }
   }, 30_000);
