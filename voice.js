@@ -125,12 +125,17 @@ export async function joinChannel(guild, voiceChannel, { passive = false } = {})
   if (existing) {
     /* Already in this exact channel — nothing to do */
     if (existing.channelId === voiceChannel.id) return existing;
-    /* If existing connection is passive and the new request is explicit, allow upgrade */
+    /* If existing connection is passive and the new request is explicit, allow upgrade.
+       Mark these destroys as intentional so the Destroyed handler does NOT
+       trigger immediate recovery (which would re-join the OLD channel and
+       race the new join). */
     if (existing.passive && !passive) {
+      intentionalLeaves.add(guild.id);
       existing.connection.destroy();
       voiceConnections.delete(guild.id);
     } else if (!existing.passive) {
       /* Explicit connection already exists — move to new channel */
+      intentionalLeaves.add(guild.id);
       existing.connection.destroy();
       voiceConnections.delete(guild.id);
     } else {
