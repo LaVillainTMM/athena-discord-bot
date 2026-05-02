@@ -25,6 +25,15 @@ const voiceConnections = new Map();
    Map<channelId, expiresAtMs>. Exported for bot.js guardian. */
 export const recentEvictions = new Map();
 
+/* Listener registry — populated by startListeningInChannel(). Used by the
+   Destroyed-handler immediate recovery path so a freshly re-joined connection
+   gets its receiver re-subscribed (otherwise transcription dies silently). */
+const activeListeners = new Map(); /* channelId → { client, sessionId } */
+
+export function hasActiveListener(channelId) {
+  return activeListeners.has(channelId);
+}
+
 export function isChannelEvicted(channelId) {
   const exp = recentEvictions.get(channelId);
   if (!exp) return false;
@@ -247,7 +256,25 @@ export async function joinChannel(guild, voiceChannel, { passive = false } = {})
         if (humans === 0) return;
         if (voiceConnections.has(guild.id)) return; /* something already reconnected */
         console.log(`[Voice] Immediate recovery: rejoining #${fresh.name} (${humans} humans present)`);
-        await joinChannel(guild, fresh, { passive });
+        const freshState = await joinChannel(guild, fresh, { passive });
+
+        /* CRITICAL: a fresh connection has a fresh receiver. The previous
+           receiver.speaking listeners are gone with the destroyed connection,
+           so transcription would silently stop. Re-subscribe using the params
+           captured the first time startListeningInChannel was called for this
+           channel. */
+        const listenerCfg = activeListeners.get(voiceChannel.id);
+        if (listenerCfg) {
+          startListeningInChannel(
+            freshState.connection,
+            guild,
+            listenerCfg.client,
+            listenerCfg.sessionId
+          );
+          console.log(`[Voice] Immediate recovery: re-attached listener in #${fresh.name}`);
+        } else {
+          console.warn(`[Voice] Immediate recovery: no active listener config for #${fresh.name} — transcription will not resume until guardian re-joins.`);
+        }
       } catch (err) {
         console.warn(`[Voice] Immediate recovery failed for #${voiceChannel.name}: ${err.message} — guardian will retry.`);
       }
@@ -514,6 +541,14 @@ async function processVoiceSample(userId, user, guild, opusChunks, durationMs, s
 export function startListeningInChannel(connection, guild, discordClient, sessionId = null) {
   const { receiver } = connection;
   console.log(`[VoiceListen] Listening for voices in ${guild.name}${sessionId ? ` (session ${sessionId})` : ""}`);
+
+  /* Register this listener config so immediate-recovery can re-attach it
+     if the connection is unexpectedly destroyed. Keyed by current channelId. */
+  const stateForGuild = voiceConnections.get(guild.id);
+  const channelId = stateForGuild?.channelId;
+  if (channelId) {
+    activeListeners.set(channelId, { client: discordClient, sessionId });
+  }
 
   receiver.speaking.on("start", async (userId) => {
     const key = `${guild.id}_${userId}`;
