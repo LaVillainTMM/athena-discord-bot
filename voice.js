@@ -224,10 +224,34 @@ export async function joinChannel(guild, voiceChannel, { passive = false } = {})
     console.log(`[Voice] Connection ready in #${voiceChannel.name}`);
   });
 
-  /* ── Clean up the map when the connection is fully destroyed ── */
+  /* ── Clean up the map when the connection is fully destroyed ──
+     If destruction was unexpected (no intentional leave, channel still has
+     humans, not under eviction cooldown), trigger an immediate fresh-join
+     attempt rather than waiting up to 30s for the bot.js guardian. */
   connection.on(VoiceConnectionStatus.Destroyed, () => {
     voiceConnections.delete(guild.id);
     console.log(`[Voice] Connection destroyed for guild ${guild.id} (#${voiceChannel.name})`);
+
+    if (intentionalLeaves.has(guild.id)) {
+      intentionalLeaves.delete(guild.id);
+      return;
+    }
+    if (isChannelEvicted(voiceChannel.id)) return;
+
+    /* Fire-and-forget immediate recovery — guardian remains the safety net. */
+    setImmediate(async () => {
+      try {
+        const fresh = guild.channels.cache.get(voiceChannel.id);
+        if (!fresh) return;
+        const humans = [...fresh.members.values()].filter(m => !m.user.bot).length;
+        if (humans === 0) return;
+        if (voiceConnections.has(guild.id)) return; /* something already reconnected */
+        console.log(`[Voice] Immediate recovery: rejoining #${fresh.name} (${humans} humans present)`);
+        await joinChannel(guild, fresh, { passive });
+      } catch (err) {
+        console.warn(`[Voice] Immediate recovery failed for #${voiceChannel.name}: ${err.message} — guardian will retry.`);
+      }
+    });
   });
 
   const player = createAudioPlayer();
@@ -239,10 +263,15 @@ export async function joinChannel(guild, voiceChannel, { passive = false } = {})
   return state;
 }
 
+/* Tracks guilds where leave was deliberately invoked, so the Destroyed
+   handler doesn't trigger immediate-recovery for an intentional leave. */
+const intentionalLeaves = new Set();
+
 /* ── Leave the voice channel in a guild ── */
 export function leaveChannel(guildId) {
   const state = voiceConnections.get(guildId);
   if (!state) return false;
+  intentionalLeaves.add(guildId);
   state.connection.destroy();
   /* voiceConnections map is cleaned up by the Destroyed listener */
   console.log(`[Voice] Left voice channel in guild ${guildId}`);

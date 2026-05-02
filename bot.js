@@ -1654,25 +1654,43 @@ client.once(Events.ClientReady, async () => {
     console.log(`[Athena] Primary guild: ${client.guilds.cache.first().name} (${primaryGuildId})`);
   }
 
-  /* 0. Firestore self-test — write/read/delete a tiny doc to confirm credentials.
-        If this fails, every other Firestore write in the process will fail too —
-        better to surface that loudly at startup than discover it via stale collections. */
-  try {
-    const diagRef = firestore.collection("_diagnostics").doc("startup");
-    await diagRef.set({
-      bootedAt: admin.firestore.FieldValue.serverTimestamp(),
-      pid:      process.pid,
-      host:     process.env.HOSTNAME || "unknown",
-    });
-    const readBack = await diagRef.get();
-    if (readBack.exists) {
-      console.log("[Firestore:_diagnostics] Self-test PASSED — credentials valid, writes are reaching Firestore.");
-    } else {
-      console.error("[Firestore:_diagnostics] Self-test ANOMALY — write succeeded but read returned empty.");
+  /* 0. Firestore startup self-test — full write/read/delete probe per critical
+        collection. Each probe writes a sentinel doc with id "__startup_probe__",
+        reads it back, and deletes it. The sentinel docId is filterable so it
+        won't pollute production queries (which all use where(...) filters on
+        title/source/etc.). Every probe logs an explicit PASS or FAIL line so
+        a glance at PM2 logs reveals whether each collection is healthy. */
+  const PROBE_COLLECTIONS = [
+    "messages",
+    "athena_knowledge",
+    "voice_fingerprints",
+    "voice_sessions",
+    "member_visual_profiles",
+    "discord_quiz_results",
+  ];
+  const PROBE_DOC_ID = "__startup_probe__";
+  const probeStarted = Date.now();
+  for (const col of PROBE_COLLECTIONS) {
+    try {
+      const ref = firestore.collection(col).doc(PROBE_DOC_ID);
+      await ref.set({
+        _probe:    true,
+        bootedAt:  admin.firestore.FieldValue.serverTimestamp(),
+        pid:       process.pid,
+        host:      process.env.HOSTNAME || "unknown",
+      });
+      const snap = await ref.get();
+      if (!snap.exists) {
+        console.error(`[Firestore:${col}] Self-test FAIL — write succeeded but read returned empty.`);
+        continue;
+      }
+      await ref.delete();
+      console.log(`[Firestore:${col}] Self-test PASS (write+read+delete)`);
+    } catch (err) {
+      console.error(`[Firestore:${col}] Self-test FAIL —`, err.message);
     }
-  } catch (err) {
-    console.error("[Firestore:_diagnostics] Self-test FAILED — Firestore writes will not work:", err.message);
   }
+  console.log(`[Firestore] Startup probes completed in ${Date.now() - probeStarted}ms`);
 
   /* 1. Sync ALL guild members → full contact cards (bots excluded) */
   for (const [, guild] of client.guilds.cache) {
@@ -1804,8 +1822,9 @@ client.once(Events.ClientReady, async () => {
         re-establish a fresh passive connection. Skips channels Athena was
         kicked from (4014 → 5min cooldown) and avoids stacking concurrent join
         attempts via an in-flight set. */
-  const guardianInFlight = new Set(); /* channelIds with a pending join */
-  const guardianBackoff  = new Map(); /* channelId → nextAttemptMs after failure */
+  const guardianInFlight  = new Set(); /* channelIds with a pending join */
+  const guardianBackoff   = new Map(); /* channelId → nextAttemptMs after failure */
+  const guardianLastDelay = new Map(); /* channelId → last delay (ms) used, for exponential growth */
 
   setInterval(async () => {
     for (const [, guild] of client.guilds.cache) {
@@ -1838,12 +1857,17 @@ client.once(Events.ClientReady, async () => {
           .then(state => {
             startListeningInChannel(state.connection, guild, client, session.sessionId);
             guardianBackoff.delete(channelId);
+            guardianLastDelay.delete(channelId);
             console.log(`[VoiceGuardian] Re-established passive listen in #${channel.name}`);
           })
           .catch(err => {
-            /* Exponential-ish backoff: 1min after first fail, capped at 10min */
-            const prev = guardianBackoff.get(channelId) ?? 0;
-            const nextDelay = prev ? Math.min(10 * 60_000, (prev - Date.now() || 60_000) * 2) : 60_000;
+            /* Exponential backoff on duration (not absolute timestamps):
+               start at 60s, double each failure, cap at 10min. */
+            const prevDelay = guardianLastDelay.get(channelId) ?? 0;
+            const nextDelay = prevDelay
+              ? Math.min(10 * 60_000, prevDelay * 2)
+              : 60_000;
+            guardianLastDelay.set(channelId, nextDelay);
             guardianBackoff.set(channelId, Date.now() + nextDelay);
             console.warn(`[VoiceGuardian] Failed to re-join #${channel.name}: ${err.message} — backing off ${Math.round(nextDelay/1000)}s`);
           })

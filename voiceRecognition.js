@@ -214,45 +214,55 @@ export function captureVoiceText(channelId, userId, content) {
    START VOICE SESSION
 ────────────────────────────────────────────────────── */
 export async function startVoiceSession({ sessionId, guildId, guildName, channelId, channelName, startTime }) {
-  const ref = voiceSessionsCol().doc(sessionId);
-  await ref.set({
-    sessionId,
-    guildId,
-    guildName,
-    channelId,
-    channelName,
-    startTime: admin.firestore.Timestamp.fromDate(startTime),
-    endTime: null,
-    duration: null,
-    status: "active",
-    participants: [],
-    participantCount: 0,
-    textLog: [],
-    insights: null,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
-  console.log(`[VoiceRecognition] Session started: ${sessionId} in #${channelName}`);
+  try {
+    const ref = voiceSessionsCol().doc(sessionId);
+    await ref.set({
+      sessionId,
+      guildId,
+      guildName,
+      channelId,
+      channelName,
+      startTime: admin.firestore.Timestamp.fromDate(startTime),
+      endTime: null,
+      duration: null,
+      status: "active",
+      participants: [],
+      participantCount: 0,
+      textLog: [],
+      insights: null,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    console.log(`[Firestore:voice_sessions] Started session ${sessionId} (#${channelName})`);
+  } catch (err) {
+    console.error(`[Firestore:voice_sessions] startVoiceSession FAILED for ${sessionId}:`, err.message);
+    throw err;
+  }
 }
 
 /* ──────────────────────────────────────────────────────
    ADD PARTICIPANT JOIN
 ────────────────────────────────────────────────────── */
 export async function recordParticipantJoin(sessionId, { athenaUserId, discordId, displayName, joinTime }) {
-  const ref = voiceSessionsCol().doc(sessionId);
-  await ref.set(
-    {
-      participants: admin.firestore.FieldValue.arrayUnion({
-        athenaUserId: athenaUserId || null,
-        discordId,
-        displayName,
-        joinTime: admin.firestore.Timestamp.fromDate(new Date(joinTime)),
-        leaveTime: null,
-        durationSeconds: null,
-      }),
-      participantCount: admin.firestore.FieldValue.increment(1),
-    },
-    { merge: true }
-  );
+  try {
+    const ref = voiceSessionsCol().doc(sessionId);
+    await ref.set(
+      {
+        participants: admin.firestore.FieldValue.arrayUnion({
+          athenaUserId: athenaUserId || null,
+          discordId,
+          displayName,
+          joinTime: admin.firestore.Timestamp.fromDate(new Date(joinTime)),
+          leaveTime: null,
+          durationSeconds: null,
+        }),
+        participantCount: admin.firestore.FieldValue.increment(1),
+      },
+      { merge: true }
+    );
+    console.log(`[Firestore:voice_sessions] Recorded join ${displayName} → ${sessionId}`);
+  } catch (err) {
+    console.error(`[Firestore:voice_sessions] recordParticipantJoin FAILED for ${displayName} → ${sessionId}:`, err.message);
+  }
 }
 
 /* ──────────────────────────────────────────────────────
@@ -314,21 +324,26 @@ export async function finalizeVoiceSession(session) {
   }));
 
   /* Update the session document with full rich data */
-  await voiceSessionsCol().doc(session.sessionId).set(
-    {
-      endTime: admin.firestore.Timestamp.fromDate(endTime),
-      duration: durationSeconds,
-      status: "completed",
-      participants: enrichedParticipants.map(p => ({
-        ...p,
-        textMessages: p.textMessages.slice(-100), /* cap at 100 msgs per participant */
-      })),
-      participantCount: enrichedParticipants.length,
-      textLog: textLog.slice(-500), /* cap at 500 total messages */
-      insights: groupInsights,
-    },
-    { merge: true }
-  );
+  try {
+    await voiceSessionsCol().doc(session.sessionId).set(
+      {
+        endTime: admin.firestore.Timestamp.fromDate(endTime),
+        duration: durationSeconds,
+        status: "completed",
+        participants: enrichedParticipants.map(p => ({
+          ...p,
+          textMessages: p.textMessages.slice(-100), /* cap at 100 msgs per participant */
+        })),
+        participantCount: enrichedParticipants.length,
+        textLog: textLog.slice(-500), /* cap at 500 total messages */
+        insights: groupInsights,
+      },
+      { merge: true }
+    );
+    console.log(`[Firestore:voice_sessions] Finalized session ${session.sessionId} (${durationSeconds}s, ${enrichedParticipants.length} participants)`);
+  } catch (err) {
+    console.error(`[Firestore:voice_sessions] finalizeVoiceSession FAILED for ${session.sessionId}:`, err.message);
+  }
 
   /* Build contact list */
   const participantIds = participantSummaries

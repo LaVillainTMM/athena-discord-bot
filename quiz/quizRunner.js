@@ -84,20 +84,26 @@ export default async function runQuiz(user) {
       if (nationCounts[a.nation] !== undefined) nationCounts[a.nation]++;
     }
 
-    await quizRef.set({
-      completed:         true,
-      answers,
-      nationCounts,
-      assignedNation,
-      aiSorted:          true,
-      totalQuestions:    questions.length,
-      totalQuestionPool: 401,
-      mandatoryCount:    MANDATORY_COUNT,
-      randomCount:       RANDOM_COUNT,
-      discordId:         user.id,
-      username:          user.username,
-      completedAt:       admin.firestore.FieldValue.serverTimestamp(),
-    });
+    try {
+      await quizRef.set({
+        completed:         true,
+        answers,
+        nationCounts,
+        assignedNation,
+        aiSorted:          true,
+        totalQuestions:    questions.length,
+        totalQuestionPool: 401,
+        mandatoryCount:    MANDATORY_COUNT,
+        randomCount:       RANDOM_COUNT,
+        discordId:         user.id,
+        username:          user.username,
+        completedAt:       admin.firestore.FieldValue.serverTimestamp(),
+      });
+      console.log(`[Firestore:discord_quiz_results] Stored quiz result for ${user.username} (${user.id}) → ${assignedNation}`);
+    } catch (err) {
+      console.error(`[Firestore:discord_quiz_results] Quiz result write FAILED for ${user.username}:`, err.message);
+      throw err;
+    }
 
     return { answers, assignedNation };
   } finally {
