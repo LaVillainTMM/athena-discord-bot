@@ -1693,6 +1693,27 @@ client.once(Events.ClientReady, async () => {
   }
   console.log(`[Firestore] Startup probes completed in ${Date.now() - probeStarted}ms`);
 
+  /* Supplemental single-doc round-trip on a dedicated diagnostics path.
+     This proves Firestore connectivity end-to-end on a non-production
+     collection so any orphan docs are isolated from real data. */
+  try {
+    const diagRef = firestore.collection("_diagnostics").doc("startup");
+    await diagRef.set({
+      at:    admin.firestore.FieldValue.serverTimestamp(),
+      pid:   process.pid,
+      host:  process.env.HOSTNAME || "unknown",
+      probeId: PROBE_DOC_ID,
+    });
+    const diagSnap = await diagRef.get();
+    if (diagSnap.exists) {
+      console.log(`[Firestore:_diagnostics/startup] Round-trip PASS`);
+    } else {
+      console.error(`[Firestore:_diagnostics/startup] Round-trip FAIL — wrote but read empty.`);
+    }
+  } catch (err) {
+    console.error(`[Firestore:_diagnostics/startup] Round-trip FAIL —`, err.message);
+  }
+
   /* 1. Sync ALL guild members → full contact cards (bots excluded) */
   for (const [, guild] of client.guilds.cache) {
     try {
@@ -1826,6 +1847,7 @@ client.once(Events.ClientReady, async () => {
   const guardianInFlight  = new Set(); /* channelIds with a pending join */
   const guardianBackoff   = new Map(); /* channelId → nextAttemptMs after failure */
   const guardianLastDelay = new Map(); /* channelId → last delay (ms) used, for exponential growth */
+  const guardianCrossChannelWarned = new Set(); /* channelIds we've already warned about being held by a different-channel passive conn (avoids log spam) */
 
   setInterval(async () => {
     for (const [, guild] of client.guilds.cache) {
@@ -1861,16 +1883,23 @@ client.once(Events.ClientReady, async () => {
                attach a listener to the wrong connection — that would stack
                duplicate receivers. Verify channel match first. */
             if (state.channelId !== channelId) {
-              console.warn(
-                `[VoiceGuardian] joinChannel returned existing connection in different channel (${state.channelId} ≠ ${channelId}); skipping listener attach for #${channel.name}.`
-              );
-              guardianBackoff.delete(channelId);
-              guardianLastDelay.delete(channelId);
+              /* Single-voice-per-guild limitation: an existing passive
+                 connection is in a different channel. Warn once per channel
+                 to keep logs high-signal, then back off for 5 minutes. */
+              if (!guardianCrossChannelWarned.has(channelId)) {
+                console.warn(
+                  `[VoiceGuardian] Cannot rejoin #${channel.name}: existing passive connection in different channel (${state.channelId}); single-voice-per-guild. Suppressing further warnings for this channel.`
+                );
+                guardianCrossChannelWarned.add(channelId);
+              }
+              guardianBackoff.set(channelId, Date.now() + 5 * 60_000);
+              guardianLastDelay.set(channelId, 5 * 60_000);
               return;
             }
             startListeningInChannel(state.connection, guild, client, session.sessionId);
             guardianBackoff.delete(channelId);
             guardianLastDelay.delete(channelId);
+            guardianCrossChannelWarned.delete(channelId);
             console.log(`[VoiceGuardian] Re-established passive listen in #${channel.name}`);
           })
           .catch(err => {
