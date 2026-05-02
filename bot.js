@@ -1706,7 +1706,8 @@ client.once(Events.ClientReady, async () => {
     });
     const diagSnap = await diagRef.get();
     if (diagSnap.exists) {
-      console.log(`[Firestore:_diagnostics/startup] Round-trip PASS`);
+      await diagRef.delete();
+      console.log(`[Firestore:_diagnostics/startup] Round-trip PASS (write+read+delete)`);
     } else {
       console.error(`[Firestore:_diagnostics/startup] Round-trip FAIL — wrote but read empty.`);
     }
