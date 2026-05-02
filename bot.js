@@ -576,7 +576,7 @@ async function loadConversation(athenaUserId) {
 
 async function saveMessage(athenaUserId, discordUserId, userMessage, aiResponse) {
   try {
-    await firestore.collection("messages").add({
+    const ref = await firestore.collection("messages").add({
       athena_user_id: athenaUserId,
       discord_user_id: discordUserId,
       text: userMessage,
@@ -585,8 +585,9 @@ async function saveMessage(athenaUserId, discordUserId, userMessage, aiResponse)
       is_ai_response: true,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
+    console.log(`[Firestore:messages] Stored message ${ref.id} (user ${discordUserId})`);
   } catch (error) {
-    console.error("[Save] Error:", error.message);
+    console.error("[Firestore:messages] saveMessage FAILED:", error.message);
   }
 }
 
@@ -1653,6 +1654,26 @@ client.once(Events.ClientReady, async () => {
     console.log(`[Athena] Primary guild: ${client.guilds.cache.first().name} (${primaryGuildId})`);
   }
 
+  /* 0. Firestore self-test — write/read/delete a tiny doc to confirm credentials.
+        If this fails, every other Firestore write in the process will fail too —
+        better to surface that loudly at startup than discover it via stale collections. */
+  try {
+    const diagRef = firestore.collection("_diagnostics").doc("startup");
+    await diagRef.set({
+      bootedAt: admin.firestore.FieldValue.serverTimestamp(),
+      pid:      process.pid,
+      host:     process.env.HOSTNAME || "unknown",
+    });
+    const readBack = await diagRef.get();
+    if (readBack.exists) {
+      console.log("[Firestore:_diagnostics] Self-test PASSED — credentials valid, writes are reaching Firestore.");
+    } else {
+      console.error("[Firestore:_diagnostics] Self-test ANOMALY — write succeeded but read returned empty.");
+    }
+  } catch (err) {
+    console.error("[Firestore:_diagnostics] Self-test FAILED — Firestore writes will not work:", err.message);
+  }
+
   /* 1. Sync ALL guild members → full contact cards (bots excluded) */
   for (const [, guild] of client.guilds.cache) {
     try {
@@ -1775,6 +1796,41 @@ client.once(Events.ClientReady, async () => {
       }
     }
   }
+
+  /* 7. ── Voice guardian ─────────────────────────────────────────────────────
+        Every 30 seconds, walk every active session and verify Athena still has
+        a live voice connection in that channel. If she dropped (network blip,
+        gateway closed the connection, manual !leave forgot), and humans are
+        still in the channel, silently re-establish a fresh passive connection.
+        This is the safety net that prevents "Athena dropping from calls". */
+  setInterval(async () => {
+    for (const [, guild] of client.guilds.cache) {
+      for (const [channelId, session] of activeSessions) {
+        if (session.guildId !== guild.id) continue;
+
+        const channel = guild.channels.cache.get(channelId);
+        if (!channel || channel.type !== ChannelType.GuildVoice) continue;
+
+        const humansPresent = [...channel.members.values()].filter(m => !m.user.bot).length;
+        if (humansPresent === 0) continue;
+
+        const connectedHere =
+          isInVoice(guild.id) && getVoiceChannelId(guild.id) === channelId;
+        if (connectedHere) continue;
+
+        console.log(
+          `[VoiceGuardian] Athena missing from #${channel.name} (${humansPresent} humans present) — re-establishing.`
+        );
+        try {
+          const state = await joinChannel(guild, channel, { passive: true });
+          startListeningInChannel(state.connection, guild, client, session.sessionId);
+          console.log(`[VoiceGuardian] Re-established passive listen in #${channel.name}`);
+        } catch (err) {
+          console.warn(`[VoiceGuardian] Failed to re-join #${channel.name}: ${err.message}`);
+        }
+      }
+    }
+  }, 30_000);
 });
 
 /* ---------------- LOGIN ---------------- */

@@ -150,7 +150,11 @@ export async function joinChannel(guild, voiceChannel, { passive = false } = {})
     );
   }
 
-  /* ── Reconnect on transient disconnects using proper rejoin() strategy ── */
+  /* ── Reconnect on transient disconnects using proper rejoin() strategy ──
+     If the voice gateway is the one disconnecting (closeCode 4014 = moved/kicked,
+     or transient ws drops), the standard pattern is to race Signalling vs Connecting:
+     either means the connection is auto-recovering. Otherwise destroy cleanly so
+     the guardian in bot.js can re-establish a fresh connection. */
   connection.on(VoiceConnectionStatus.Disconnected, async (_, newState) => {
     const reason    = newState.reason;
     const closeCode = newState.closeCode ?? "n/a";
@@ -160,27 +164,37 @@ export async function joinChannel(guild, voiceChannel, { passive = false } = {})
       reason === VoiceConnectionDisconnectReason.WebSocketClose &&
       closeCode === 4014
     ) {
-      /* 4014 = forcibly removed from channel (kicked / moved).
-         Waiting for Connecting state is the correct recovery path here. */
-      try {
-        await entersState(connection, VoiceConnectionStatus.Connecting, 5_000);
-        console.log(`[Voice] Recovering from 4014 close in #${voiceChannel.name}...`);
-      } catch {
-        console.warn(`[Voice] 4014 recovery failed — destroying.`);
-        connection.destroy();
-      }
+      /* 4014 = forcibly removed (kicked / moved). The voice gateway will not
+         auto-reconnect — destroy and let the bot.js guardian re-join if humans remain. */
+      console.warn(`[Voice] 4014 close — destroying so guardian can re-establish.`);
+      try { connection.destroy(); } catch {}
       return;
     }
 
-    /* For all other disconnect reasons, attempt up to 5 rejoins with backoff */
+    /* Race auto-recovery: if the voice manager moves to Signalling/Connecting
+       within 5s, recovery is in progress. Otherwise rejoin manually. */
+    try {
+      await Promise.race([
+        entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+        entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+      ]);
+      console.log(`[Voice] Auto-recovery in progress for #${voiceChannel.name}...`);
+      return;
+    } catch {
+      /* No auto-recovery — try manual rejoin a few times then surrender to guardian */
+    }
+
     if (connection.rejoinAttempts < 5) {
       const delay = (connection.rejoinAttempts + 1) * 5_000;
-      console.log(`[Voice] Rejoin attempt ${connection.rejoinAttempts + 1}/5 in ${delay / 1000}s...`);
+      console.log(`[Voice] Manual rejoin attempt ${connection.rejoinAttempts + 1}/5 in ${delay / 1000}s...`);
       await new Promise(r => setTimeout(r, delay));
-      connection.rejoin();
+      try { connection.rejoin(); } catch (err) {
+        console.warn(`[Voice] rejoin() threw: ${err.message} — destroying for guardian.`);
+        try { connection.destroy(); } catch {}
+      }
     } else {
-      console.warn(`[Voice] Exhausted 5 rejoin attempts for #${voiceChannel.name} — destroying.`);
-      connection.destroy();
+      console.warn(`[Voice] Exhausted 5 rejoin attempts for #${voiceChannel.name} — destroying for guardian.`);
+      try { connection.destroy(); } catch {}
     }
   });
 
@@ -396,9 +410,9 @@ async function storeVoiceLog(userId, user, guild, { durationMs, transcript, samp
       { merge: true }
     );
 
-    console.log(`[VoiceListen] Stored voice log for ${user.username}: "${transcript || "no transcript"}" (${durationMs}ms)`);
+    console.log(`[Firestore:voice_fingerprints] Stored audio_log for ${user.username} — "${transcript || "no transcript"}" (${durationMs}ms)`);
   } catch (err) {
-    console.error("[VoiceListen] storeVoiceLog error:", err.message);
+    console.error("[Firestore:voice_fingerprints] storeVoiceLog FAILED:", err.message);
   }
 }
 
