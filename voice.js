@@ -305,6 +305,39 @@ export async function joinChannel(guild, voiceChannel, { passive = false } = {})
   const state = { connection, player, channelId: voiceChannel.id, passive };
   voiceConnections.set(guild.id, state);
   console.log(`[Voice] Joined #${voiceChannel.name} in ${guild.name} (${passive ? "passive/silent" : "active"})`);
+
+  /* ── Heartbeat watchdog ──────────────────────────────
+     Discord's voice library is event-driven, but on Railway/cloud hosts the
+     UDP socket can silently flatline without firing Disconnected. Every 20s
+     we sample the connection's status; if it sits in a non-recoverable state
+     (Disconnected for >2 consecutive checks, or anything other than the
+     healthy trio) we forcibly destroy it so the Destroyed handler triggers a
+     fresh-join recovery. The interval is cleared on Destroyed so we don't
+     leak timers across reconnects. */
+  let badChecks = 0;
+  const heartbeat = setInterval(() => {
+    const status = connection.state.status;
+    const healthy =
+      status === VoiceConnectionStatus.Ready ||
+      status === VoiceConnectionStatus.Signalling ||
+      status === VoiceConnectionStatus.Connecting;
+    if (healthy) {
+      badChecks = 0;
+      return;
+    }
+    badChecks++;
+    console.warn(`[Voice:Heartbeat] #${voiceChannel.name} status=${status} (bad check ${badChecks}/2)`);
+    if (badChecks >= 2) {
+      console.warn(`[Voice:Heartbeat] Forcing destroy on stuck connection in #${voiceChannel.name}.`);
+      try { connection.destroy(); } catch {}
+      /* Destroyed handler will clear the interval below and trigger immediate recovery. */
+    }
+  }, 20_000);
+
+  connection.on(VoiceConnectionStatus.Destroyed, () => {
+    clearInterval(heartbeat);
+  });
+
   return state;
 }
 

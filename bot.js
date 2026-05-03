@@ -1805,6 +1805,33 @@ client.once(Events.ClientReady, async () => {
       .catch(err => console.error("[DOJ] Daily sync failed:", err.message));
   }, 24 * 60 * 60 * 1000);
 
+  /* 5.7. Regional knowledge sweep — pulls one news article per U.S. state and
+          per continent every 24 hours so Athena always has fresh per-region
+          coverage. Initial run after 60s so it doesn't pile on top of DOJ
+          startup sync; recurring run every 24h. */
+  const { runDailySweep } = await import("./lib/regionalFetcher.js");
+  const { storeNewKnowledge } = await import("./lib/knowledgeUpdater.js");
+  const regionalStoreFn = entry =>
+    storeNewKnowledge({
+      title:       entry.title,
+      body:        entry.content,
+      source:      entry.source,
+      verified:    entry.verified,
+      explanation: `Regional update for ${entry.region} (${entry.category})`,
+    });
+
+  setTimeout(() => {
+    runDailySweep(regionalStoreFn).catch(err =>
+      console.error("[RegionalSweep] Startup sweep failed:", err.message)
+    );
+  }, 60_000);
+
+  setInterval(() => {
+    runDailySweep(regionalStoreFn).catch(err =>
+      console.error("[RegionalSweep] Daily sweep failed:", err.message)
+    );
+  }, 24 * 60 * 60 * 1000);
+
   /* 5.6. Weekly quiz reminders — DM every member who hasn't completed the quiz */
   const primaryGuild = primaryGuildId ? client.guilds.cache.get(primaryGuildId) : client.guilds.cache.first();
   if (primaryGuild) {
