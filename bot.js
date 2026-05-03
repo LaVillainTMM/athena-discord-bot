@@ -1833,11 +1833,12 @@ client.once(Events.ClientReady, async () => {
     );
   }, 24 * 60 * 60 * 1000);
 
-  /* 5.8. Regional ORIGIN/HISTORY profile sweep — pulls Wikipedia summaries
-          for History, Geography, Economy, and Demographics of every U.S.
-          state and continent. Runs ~3 minutes after startup so it doesn't
-          collide with the news sweep, and weekly thereafter (Wikipedia
-          summaries change rarely — storeNewKnowledge dedupes by title). */
+  /* 5.8. Regional ORIGIN/HISTORY profile sweep — pulls Encyclopaedia
+          Britannica summaries (accredited reference source) for History,
+          Geography, Economy, and People of every U.S. state and continent.
+          Runs ~3 minutes after startup so it doesn't collide with the news
+          sweep, and weekly thereafter — storeNewKnowledge dedupes by
+          title so re-runs are cheap. Wikipedia is excluded by policy. */
   setTimeout(() => {
     runProfileSweep(REGIONS, regionalStoreFn).catch(err =>
       console.error("[RegionalProfile] Startup sweep failed:", err.message)
