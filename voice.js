@@ -178,7 +178,7 @@ export async function joinChannel(guild, voiceChannel, { passive = false } = {})
     guildId:   guild.id,
     adapterCreator: guild.voiceAdapterCreator,
     selfDeaf: false,
-    selfMute: passive, /* muted when passively listening — unmuted when explicitly joined */
+    selfMute: false, /* always unmuted — Athena should appear active in every call she joins */
   });
 
   try {
@@ -307,32 +307,43 @@ export async function joinChannel(guild, voiceChannel, { passive = false } = {})
   console.log(`[Voice] Joined #${voiceChannel.name} in ${guild.name} (${passive ? "passive/silent" : "active"})`);
 
   /* ── Heartbeat watchdog ──────────────────────────────
-     Discord's voice library is event-driven, but on Railway/cloud hosts the
-     UDP socket can silently flatline without firing Disconnected. Every 20s
-     we sample the connection's status; if it sits in a non-recoverable state
-     (Disconnected for >2 consecutive checks, or anything other than the
-     healthy trio) we forcibly destroy it so the Destroyed handler triggers a
-     fresh-join recovery. The interval is cleared on Destroyed so we don't
-     leak timers across reconnects. */
-  let badChecks = 0;
-  const heartbeat = setInterval(() => {
+     The voice library is event-driven, but on cloud hosts (Railway / Vultr)
+     the UDP socket can silently flatline without firing Disconnected. We
+     sample status every 10 seconds and additionally require that the
+     connection is sitting in Ready (the only fully-healthy state) at least
+     once every 60 seconds — anything else for 60s straight forces a
+     destroy → fresh-join. We also use entersState as a *positive* check so
+     a connection mid-recovery isn't killed prematurely. */
+  let lastReadyAt = Date.now();
+  let stuckTicks  = 0;
+  const heartbeat = setInterval(async () => {
     const status = connection.state.status;
-    const healthy =
-      status === VoiceConnectionStatus.Ready ||
-      status === VoiceConnectionStatus.Signalling ||
-      status === VoiceConnectionStatus.Connecting;
-    if (healthy) {
-      badChecks = 0;
+    if (status === VoiceConnectionStatus.Ready) {
+      lastReadyAt = Date.now();
+      stuckTicks  = 0;
       return;
     }
-    badChecks++;
-    console.warn(`[Voice:Heartbeat] #${voiceChannel.name} status=${status} (bad check ${badChecks}/2)`);
-    if (badChecks >= 2) {
-      console.warn(`[Voice:Heartbeat] Forcing destroy on stuck connection in #${voiceChannel.name}.`);
-      try { connection.destroy(); } catch {}
-      /* Destroyed handler will clear the interval below and trigger immediate recovery. */
+    /* Mid-recovery states get a brief grace period via entersState. */
+    if (
+      status === VoiceConnectionStatus.Signalling ||
+      status === VoiceConnectionStatus.Connecting
+    ) {
+      try {
+        await entersState(connection, VoiceConnectionStatus.Ready, 8_000);
+        lastReadyAt = Date.now();
+        stuckTicks  = 0;
+        return;
+      } catch { /* fall through into stuck handling */ }
     }
-  }, 20_000);
+    stuckTicks++;
+    const stuckSeconds = Math.round((Date.now() - lastReadyAt) / 1000);
+    console.warn(`[Voice:Heartbeat] #${voiceChannel.name} status=${status} (stuck ${stuckSeconds}s, tick ${stuckTicks})`);
+    if (stuckSeconds >= 60 || stuckTicks >= 6) {
+      console.warn(`[Voice:Heartbeat] Forcing destroy — connection stuck ${stuckSeconds}s in ${status}.`);
+      try { connection.destroy(); } catch {}
+      /* Destroyed handler will clear this interval AND trigger fresh-join recovery. */
+    }
+  }, 10_000);
 
   connection.on(VoiceConnectionStatus.Destroyed, () => {
     clearInterval(heartbeat);
