@@ -1809,8 +1809,9 @@ client.once(Events.ClientReady, async () => {
           per continent every 24 hours so Athena always has fresh per-region
           coverage. Initial run after 60s so it doesn't pile on top of DOJ
           startup sync; recurring run every 24h. */
-  const { runDailySweep } = await import("./lib/regionalFetcher.js");
-  const { storeNewKnowledge } = await import("./lib/knowledgeUpdater.js");
+  const { runDailySweep, REGIONS } = await import("./lib/regionalFetcher.js");
+  const { runProfileSweep }        = await import("./lib/regionalProfile.js");
+  const { storeNewKnowledge }      = await import("./lib/knowledgeUpdater.js");
   const regionalStoreFn = entry =>
     storeNewKnowledge({
       title:       entry.title,
@@ -1831,6 +1832,23 @@ client.once(Events.ClientReady, async () => {
       console.error("[RegionalSweep] Daily sweep failed:", err.message)
     );
   }, 24 * 60 * 60 * 1000);
+
+  /* 5.8. Regional ORIGIN/HISTORY profile sweep — pulls Wikipedia summaries
+          for History, Geography, Economy, and Demographics of every U.S.
+          state and continent. Runs ~3 minutes after startup so it doesn't
+          collide with the news sweep, and weekly thereafter (Wikipedia
+          summaries change rarely — storeNewKnowledge dedupes by title). */
+  setTimeout(() => {
+    runProfileSweep(REGIONS, regionalStoreFn).catch(err =>
+      console.error("[RegionalProfile] Startup sweep failed:", err.message)
+    );
+  }, 3 * 60_000);
+
+  setInterval(() => {
+    runProfileSweep(REGIONS, regionalStoreFn).catch(err =>
+      console.error("[RegionalProfile] Weekly sweep failed:", err.message)
+    );
+  }, 7 * 24 * 60 * 60 * 1000);
 
   /* 5.6. Weekly quiz reminders — DM every member who hasn't completed the quiz */
   const primaryGuild = primaryGuildId ? client.guilds.cache.get(primaryGuildId) : client.guilds.cache.first();
