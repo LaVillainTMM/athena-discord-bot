@@ -37,6 +37,38 @@ import { sendAudioMessage, isAudioRequest, splitResponseForAudio } from "./audio
 import { syncLatestDojPressReleases, searchAndStoreDoj, getDojKnowledgeSummary } from "./lib/dojKnowledge.js";
 import { storeMemberVisualProfile, identifyMembersInImage } from "./visualIdentity.js";
 import { isWeatherQuery, extractLocation, fetchWeather, formatWeatherContext } from "./lib/weather.js";
+import {
+  listRoster, upsertArtist, removeArtist,
+  snapshotArtist, snapshotAllArtists,
+  formatRosterDigest, providerStatus,
+} from "./lib/musicAnalytics.js";
+
+/* ── Label roster digest cache ──
+   Refreshed every 30 minutes. Returns "" when no roster exists or no
+   provider is configured, so it's silently skipped on personal/community
+   conversations and only enriches business-context messages. */
+let _rosterDigestCache = { text: "", expiresAt: 0 };
+const ROSTER_CACHE_TTL_MS = 30 * 60 * 1000;
+async function getCachedRosterDigest() {
+  if (Date.now() < _rosterDigestCache.expiresAt) return _rosterDigestCache.text;
+  const status = providerStatus();
+  if (!status.spotify && !status.youtube) {
+    _rosterDigestCache = { text: "", expiresAt: Date.now() + ROSTER_CACHE_TTL_MS };
+    return "";
+  }
+  const roster = await listRoster();
+  if (!roster.length) {
+    _rosterDigestCache = { text: "", expiresAt: Date.now() + ROSTER_CACHE_TTL_MS };
+    return "";
+  }
+  const snaps = await snapshotAllArtists();
+  const text  = formatRosterDigest(snaps);
+  _rosterDigestCache = { text, expiresAt: Date.now() + ROSTER_CACHE_TTL_MS };
+  return text;
+}
+function invalidateRosterCache() {
+  _rosterDigestCache = { text: "", expiresAt: 0 };
+}
 
 if (!process.env.DISCORD_TOKEN) throw new Error("DISCORD_TOKEN missing");
 if (!process.env.GOOGLE_GENAI_API_KEY) throw new Error("GOOGLE_GENAI_API_KEY missing");
@@ -235,6 +267,118 @@ COMMUNICATION STYLE WITH LAVILLAIN:
 - When numbers matter, give them. Round only when context allows.
 - Always close a label/business message with a concrete next step or a yes/no decision he needs to make.
 - Never wait to be asked about an artist's performance — surface it the moment it's relevant.
+
+LIVE METRICS YOU RECEIVE AUTOMATICALLY:
+- When the label roster has artists configured and Spotify/YouTube API keys are set, every Discord message you respond to includes a '[LABEL ROSTER LIVE METRICS]' block with current Spotify followers, popularity score, top track, YouTube subscribers, and total views per artist. Refreshed every 30 minutes.
+- Use this data to drive recommendations without being asked. If a number jumps or stalls, name it.
+- LaVillain can manage the roster with '!label list / add / remove / snapshot / status' (admin commands).
+- If the block is missing, the providers aren't configured yet — say so plainly and tell him exactly which env var to set (SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, YOUTUBE_API_KEY).
+
+═══════════════════════════════════════════════════════════════════════════
+MUSIC INDUSTRY LEGAL CORPUS — know cold, cite by section, apply to deals
+═══════════════════════════════════════════════════════════════════════════
+
+COPYRIGHT (Title 17 U.S.C.) — the foundation of every dollar in music:
+- Two separate copyrights in every recorded song:
+  1. SOUND RECORDING (the master) — the actual recorded performance. Owner: usually the label (or the artist if independent). Symbol: ℗
+  2. MUSICAL COMPOSITION (the song / "publishing") — the underlying lyrics and melody. Owner: songwriter(s) and/or publisher. Symbol: ©
+- §102: copyrightable works include musical works, sound recordings, lyrics. Originality + fixation in tangible medium = automatic copyright (registration is not required to OWN the copyright but IS required to SUE for infringement and to claim statutory damages).
+- §106: exclusive rights — reproduce, prepare derivatives, distribute copies, perform publicly, display, perform sound recording publicly via digital audio transmission (digital performance right).
+- §114: digital performance right in sound recordings (the basis for SoundExchange royalties — non-interactive digital streams like SiriusXM, Pandora radio, webcasters).
+- §115: COMPULSORY MECHANICAL LICENSE — anyone can record a cover of a previously released song by paying the statutory mechanical rate (administered by the MLC since the MMA of 2018). Current rate ~$0.124 per copy for tracks ≤5min, or 2.39¢/min thereafter. Phono-record + interactive streaming both covered.
+- §201(d): copyrights are freely transferable in writing.
+- §203: TERMINATION RIGHTS — authors can terminate any post-1977 transfer of copyright 35 years after the grant (window: years 35–40). This is why catalog buyers price in the 35-year clock. NOT applicable to works-for-hire.
+- §101 work-for-hire definition: must be (a) prepared by an employee within the scope of employment OR (b) specially commissioned in one of nine enumerated categories AND in a signed writing. Sound recordings are NOT one of the nine enumerated categories — so calling a master a "work for hire" in a producer agreement is a frequent mistake unless backed by an assignment clause.
+- §107: fair use four-factor test — purpose & character, nature of work, amount used, market effect. Sampling without clearance is almost never fair use.
+- §512 DMCA: safe-harbor for ISPs/platforms; takedown notice procedure (§512(c)(3)); counter-notification window (10–14 business days); §512(f) penalties for misrepresentation.
+- §1101 anti-bootlegging: federal civil + criminal action against unauthorized recording of live performances.
+
+MUSIC MODERNIZATION ACT (MMA, 2018) — three titles you must know:
+- Title I (Musical Works Modernization Act): created the MLC (Mechanical Licensing Collective). Streaming services pay the MLC a blanket mechanical license; songwriters/publishers register works at musicalworks.org to collect.
+- Title II (CLASSICS Act): federalized pre-1972 sound recordings — labels can finally collect digital performance royalties on oldies via SoundExchange.
+- Title III (AMP Act): producers, mixers, and sound engineers can directly collect their negotiated share of SoundExchange royalties via "letters of direction."
+
+PERFORMING RIGHTS ORGANIZATIONS (PROs):
+- ASCAP, BMI (consent decrees with DOJ), SESAC (boutique, invite-only), GMR (Global Music Rights — high-power roster). Each songwriter affiliates with ONE PRO.
+- PROs collect for public performance of compositions (radio, TV, venues, restaurants, gyms, streaming).
+- Rate court (S.D.N.Y.) sets ASCAP/BMI rates when negotiations fail.
+
+COLLECTION ENTITIES — who pays what:
+- MLC → mechanical royalties for interactive streaming (Spotify, Apple, etc.) → songwriter/publisher
+- HFA (Harry Fox Agency) → mechanical licenses for physical / downloads (legacy; many publishers still use)
+- SoundExchange → digital performance royalties for sound recordings → ℗ owner (label) gets 50%, featured artist 45%, non-featured musicians via AFM/SAG-AFTRA fund 5%
+- ASCAP/BMI/SESAC/GMR → public performance of compositions → songwriter + publisher
+- Direct deals with DSPs → master royalty for on-demand streaming → label/distributor (then artist per contract)
+- AARC (Alliance of Artists & Recording Companies) → DART royalties + foreign private copying levies
+
+STANDARD MUSIC INDUSTRY CONTRACTS — terms you negotiate from:
+- RECORDING AGREEMENT (label deal): advance, recoupment from royalties, royalty rate (typically 12–25% of net for new artists, up to 50% for indie 50/50 deals), term (initial period + option periods), territory, controlled-composition clause (75% mechanical rate cap on owned songs), key-person clauses, leaving-member provisions, audit rights (annually, usually limited 3 years back).
+- 360 DEAL: label takes a percentage of ALL artist revenue (touring, merch, sync, endorsements) in exchange for larger marketing investment. Standard in major-label deals since ~2008.
+- PRODUCER AGREEMENT: producer "points" (typically 3–5 points = 3–5% of net royalties), advance recoupable from producer royalties only (not artist's), credit (e.g. "Produced by"), reversion if not released within X months, side-artist letter for samples.
+- DISTRIBUTION DEAL: distributor takes a fee (5–25%) and pays through the rest. Master ownership stays with artist/label. Examples: DistroKid (flat fee), CD Baby (% per stream), Stem (analytics + splits), UnitedMasters, Symphonic, Empire (hybrid label-distro).
+- LABEL SERVICES DEAL: label provides marketing/promotion/distribution but artist KEEPS master ownership. Splits typically 50/50 or 70/30 in artist's favor after marketing recoupment.
+- P&D DEAL (Pressing & Distribution): manufacturer/distributor handles physical production and distribution; artist retains everything else.
+- PUBLISHING ADMINISTRATION: admin company collects publishing royalties globally for a 10–25% fee. Songwriter retains 100% ownership. (Examples: Songtrust, CD Baby Pro, Kobalt admin.)
+- CO-PUB DEAL: publisher owns 50% of the publisher's share (= 25% of total) in exchange for an advance and active pitching. Songwriter keeps 100% writer's share + 50% of publisher's share.
+- FULL PUBLISHING DEAL: publisher owns 100% of publisher's share (50% of total) in exchange for larger advance.
+- SYNC LICENSE: one-time license to use a composition in audio-visual media. Negotiate fee + term + territory + media + exclusivity.
+- MASTER USE LICENSE: parallel license for the recording. A sync placement requires BOTH a sync license (composition) AND master use license (recording) — and they go to different parties unless one entity owns both.
+- SAMPLE CLEARANCE: must clear BOTH master use (from label that owns the recording) AND mechanical / publishing share (from songwriter/publisher). Cleared either as a buyout (one-time fee) or interpolation deal (publishing percentage of new song, often 25–50%+).
+- INTERPOLATION: re-recording someone else's melody/lyric without using their master. Only need composition clearance, not master.
+- FEATURED ARTIST AGREEMENT: feature fee (advance), royalty share (typically prorated to verse length or 50/50 split), credit format, marketing obligations.
+- SPLIT SHEET: signed at the end of every writing session. Lists every collaborator with their composition % and PRO affiliation. NEVER leave a session without it — most publishing disputes start with no split sheet.
+
+═══════════════════════════════════════════════════════════════════════════
+LLC GROWTH PLAYBOOK — turn the label into a high-revenue going concern
+═══════════════════════════════════════════════════════════════════════════
+
+OPERATING AGREEMENT — your constitution:
+- Capital contributions schedule, capital accounts, profit/loss allocation, distribution waterfall (preferred return → catch-up → carry split).
+- Member classes (common units, profits interests for incoming partners under Rev Proc 93-27 — issued at zero tax to recipient if structured correctly), voting rights, transfer restrictions, right of first refusal, drag-along, tag-along, buy-sell triggers.
+- Manager-managed vs member-managed. For a growth-stage label, manager-managed gives the founder operational control while admitting investors as members.
+
+ENTITY EVOLUTION PATH (LLC growth stages):
+- Stage 1 (founder solo): single-member LLC, disregarded entity, Schedule C. Easiest filing.
+- Stage 2 (≈$40K+ net income): elect S-Corp taxation via Form 2553. Pay yourself reasonable salary (W-2), take rest as distributions — saves 15.3% SE tax on the distribution portion. Reasonable salary IRS factors (Watson v. Commissioner): training, duties, time, comparable salaries.
+- Stage 3 (taking on partners / investors): convert to multi-member LLC, draft full Operating Agreement, issue profits interests to key talent / managers. File Form 1065 partnership return; members get K-1s.
+- Stage 4 (institutional capital / major-label JV): consider Delaware C-Corp conversion. C-Corp is required for most VC funds (1202 QSBS exclusion eligibility kicks in here — 5-year hold = up to $10M gain tax-free per shareholder). Convert via state-law conversion or F-reorg.
+- Stage 5 (multi-state operations): qualify as a foreign LLC in every state where you have a "nexus" (employees, office, regular business presence). Touring artists CREATE nexus in every state they perform — track and file accordingly.
+
+CAPITAL RAISES — the federal exemption menu (Securities Act of 1933):
+- §4(a)(2) private placement: classic exemption, no general solicitation, must be sophisticated investors. Common for friends-and-family rounds.
+- Reg D Rule 506(b): unlimited capital, up to 35 non-accredited (sophisticated) + unlimited accredited investors, NO general solicitation. File Form D within 15 days of first sale.
+- Reg D Rule 506(c): unlimited capital, ALL investors must be ACCREDITED, accreditation must be VERIFIED (not self-certified), general solicitation ALLOWED. Best path for a label running an open fundraising campaign.
+- Reg CF (Crowdfunding): up to $5M/12mo, non-accredited investors allowed, must use FINRA-registered portal (Wefunder, Republic, StartEngine), Form C filing, annual reports.
+- Reg A+: "mini IPO," up to $75M/12mo, allows non-accredited, requires SEC qualification (Form 1-A), audited financials. Heavier compliance but allows public marketing.
+- Rule 504: up to $10M/12mo, limited use, often combined with state-by-state Blue Sky compliance.
+
+INSTRUMENTS YOU ISSUE:
+- SAFE (Simple Agreement for Future Equity): converts to equity at next priced round. Most common early-stage instrument. Watch valuation cap vs discount mechanics.
+- Convertible note: debt that converts. Has interest rate + maturity + cap + discount. Investor protection for delays.
+- Priced equity round: actual share/unit issuance at agreed pre-money valuation. Triggers cap-table dilution math, requires 409A valuation if issuing options later.
+- Profits interest units (LLC equivalent of stock options): grant of FUTURE profit/appreciation, not current value. Tax-free at grant if 83(b) filed within 30 days and Rev Proc 93-27 satisfied.
+- Revenue share / royalty financing: investor advances capital in exchange for % of master/publishing income until target multiple is hit (e.g. 1.5x in 5 years). Non-dilutive. Common in modern catalog finance.
+
+REVENUE EXPANSION LEVERS the label should pull:
+- Catalog acquisition: buy older masters at 4–8x annual royalty income, refresh marketing, capture upside. Royalty Exchange / SongVest / direct outreach to legacy artists.
+- Sync licensing agency relationship: get on rosters at Marmoset, Position Music, Songtradr, Musicbed. Music supervisor cold outreach for HBO, Netflix, A24, ad agencies.
+- Brand partnerships: artist-as-creator deals (sponsored content, brand ambassador, product placement). Typical fee structure: flat + performance bonus.
+- Publishing administration in-house: instead of paying Songtrust 15%, become your own admin. Register works directly with MLC, ASCAP/BMI, foreign CMOs (PRS, GEMA, SACEM) via reciprocal admin deals.
+- Neighboring rights collection: register sound recordings with SoundExchange + foreign neighboring rights societies (PPL UK, GVL Germany, etc.) — money sitting on the table for most indie labels.
+- Direct-to-fan commerce: Bandcamp, Shopify storefront, fan-club subscription (Patreon, Discord premium roles), merch drops, vinyl pressings, NFTs / Web3 collectibles.
+- Touring: house production company within the LLC books own shows, captures promoter margin instead of paying it.
+- Music publishing as separate entity: spin off a publishing LLC owned by the label LLC — cleaner royalty flow, easier to sell or monetize publishing separately.
+
+COMPLIANCE OBLIGATIONS the LLC cannot skip:
+- Annual report / franchise tax in formation state + every foreign-qualified state.
+- BOI (Beneficial Ownership Information) reporting under the Corporate Transparency Act — file with FinCEN within required windows for every 25%+ owner and every "substantial control" person.
+- 1099-NEC to every contractor paid $600+ (producers, engineers, photographers, videographers, dancers, writers).
+- Sales tax on physical merch in every state with nexus (most states now require remote-seller registration past de minimis thresholds — Wayfair v. South Dakota).
+- W-9 collection from every payee BEFORE first payment.
+- Trademark registration of label name + each artist's stage name with USPTO (Class 9 recordings, Class 25 apparel, Class 41 entertainment services). Common-law rights exist from first use, but federal registration unlocks ® symbol, nationwide priority, and statutory damages.
+- DMCA agent registration with the U.S. Copyright Office for every artist/label website that hosts user content (free, must renew every 3 years).
+
+When LaVillain asks any question that touches structure, contracts, capital, or compliance — you reach into this corpus and answer with specific section citations and concrete next steps. You never say "consult a lawyer" without first delivering the substantive answer.
 
 
 - You fully understand emojis — their literal meaning, emotional tone, cultural context, and how they are being used.
@@ -772,7 +916,19 @@ async function getAthenaResponse(content, athenaUserId, discordUserId, channel, 
     ? ""  /* explicit query already handled in serverContext — no duplication */
     : await buildVoiceContextForUser(effectiveGuildId, discordUserId);
 
-  const fullMessage = liveContext + knowledgeBlock + weatherBlock + voiceAwareness + serverContext + content;
+  /* Label roster digest — pulled live from Spotify/YouTube on a 30-min
+     cache so Athena always speaks with current numbers without hammering
+     the APIs on every Discord message. Gracefully empty if no providers
+     are configured or if the roster is empty. */
+  let labelBlock = "";
+  try {
+    const digest = await getCachedRosterDigest();
+    if (digest) labelBlock = `${digest}\n\n`;
+  } catch (err) {
+    console.warn(`[MusicAnalytics] Roster digest skipped: ${err.message}`);
+  }
+
+  const fullMessage = liveContext + knowledgeBlock + weatherBlock + labelBlock + voiceAwareness + serverContext + content;
 
   let reply;
   try {
@@ -1135,7 +1291,127 @@ client.on(Events.MessageCreate, async message => {
     return;
   }
 
-  /* ── !doj — DOJ knowledge management ── */
+  /* ── !label / !roster — record-label admin commands ─────────────────────── */
+  if (message.content.startsWith("!label") || message.content.startsWith("!roster")) {
+    if (!ADMIN_IDS.includes(message.author.id)) {
+      await message.reply("This command is restricted to administrators.");
+      return;
+    }
+    const raw  = message.content.replace(/^!(label|roster)\s*/, "").trim();
+    const args = raw.split(/\s+/);
+    const sub  = (args.shift() || "").toLowerCase();
+
+    try {
+      if (!sub || sub === "list") {
+        const roster = await listRoster();
+        if (!roster.length) {
+          await message.reply(
+            "No artists in the label roster yet. Add one with:\n" +
+            "`!label add <id> name=\"Artist Name\" spotify=<spotifyArtistId> youtube=<channelId>`"
+          );
+          return;
+        }
+        const lines = roster.map(a => {
+          const sources = [
+            a.spotifyId        ? `spotify:${a.spotifyId}`    : null,
+            a.youtubeChannelId ? `yt:${a.youtubeChannelId}`  : null,
+            a.tiktokHandle     ? `tt:@${a.tiktokHandle}`     : null,
+          ].filter(Boolean).join(", ");
+          return `• **${a.name || a.id}** (${a.id}) — ${sources || "no sources"}`;
+        }).join("\n");
+        await message.reply(`**Label roster (${roster.length}):**\n${lines}`);
+        return;
+      }
+
+      if (sub === "add") {
+        const id = args.shift();
+        if (!id) { await message.reply("Usage: `!label add <id> name=\"X\" spotify=<id> youtube=<channelId> tiktok=<handle>`"); return; }
+        const rest = raw.replace(/^add\s+\S+\s*/, "");
+        const fields = {};
+        const re = /(\w+)=("([^"]*)"|(\S+))/g;
+        let m;
+        while ((m = re.exec(rest)) !== null) fields[m[1].toLowerCase()] = m[3] ?? m[4];
+        const data = {
+          name:             fields.name             || id,
+          spotifyId:        fields.spotify          || null,
+          youtubeChannelId: fields.youtube          || null,
+          tiktokHandle:     fields.tiktok           || null,
+          instagramHandle:  fields.instagram        || null,
+          appleId:          fields.apple            || null,
+          role:             fields.role             || "artist",
+          signedAt:         fields.signedat         || new Date().toISOString(),
+        };
+        await upsertArtist(id, data);
+        invalidateRosterCache();
+        await message.reply(`Added **${data.name}** to the label roster.`);
+        return;
+      }
+
+      if (sub === "remove" || sub === "rm") {
+        const id = args.shift();
+        if (!id) { await message.reply("Usage: `!label remove <id>`"); return; }
+        await removeArtist(id);
+        invalidateRosterCache();
+        await message.reply(`Removed **${id}** from the label roster.`);
+        return;
+      }
+
+      if (sub === "snapshot" || sub === "snap") {
+        const id = args.shift();
+        if (id) {
+          await message.reply(`Pulling live metrics for **${id}**...`);
+          const snap = await snapshotArtist(id);
+          const sp = snap.spotify, yt = snap.youtube;
+          const lines = [`**${snap.name}** snapshot:`];
+          if (sp) {
+            lines.push(`Spotify — ${sp.followers?.toLocaleString()} followers, popularity ${sp.popularity}/100, genres: ${sp.genres?.join(", ") || "—"}`);
+            if (sp.topTracks?.length) {
+              lines.push(`Top tracks:`);
+              sp.topTracks.slice(0, 5).forEach(t => lines.push(`  • ${t.name} (pop ${t.popularity})`));
+            }
+          }
+          if (yt) {
+            lines.push(`YouTube — ${yt.subscribers?.toLocaleString()} subs, ${yt.totalViews?.toLocaleString()} views, ${yt.videoCount} videos`);
+          }
+          if (!sp && !yt) lines.push("No provider returned data — check API keys and artist IDs.");
+          invalidateRosterCache();
+          await message.reply(lines.join("\n").slice(0, 1900));
+        } else {
+          await message.reply("Pulling live metrics for the entire roster...");
+          const all = await snapshotAllArtists();
+          invalidateRosterCache();
+          await message.reply(formatRosterDigest(all).slice(0, 1900) || "Roster is empty.");
+        }
+        return;
+      }
+
+      if (sub === "status") {
+        const status = providerStatus();
+        const roster = await listRoster();
+        await message.reply(
+          `**Label analytics status:**\n` +
+          `• Spotify: ${status.spotify ? "configured" : "missing SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET"}\n` +
+          `• YouTube: ${status.youtube ? "configured" : "missing YOUTUBE_API_KEY"}\n` +
+          `• Roster size: ${roster.length} artist${roster.length === 1 ? "" : "s"}`
+        );
+        return;
+      }
+
+      await message.reply(
+        "**!label commands** (admin only):\n" +
+        "`!label list` — show current roster\n" +
+        "`!label add <id> name=\"X\" spotify=<id> youtube=<channelId> tiktok=<handle>` — add artist\n" +
+        "`!label remove <id>` — drop artist\n" +
+        "`!label snapshot [id]` — pull live metrics for one artist or whole roster\n" +
+        "`!label status` — show provider configuration"
+      );
+    } catch (err) {
+      console.error("[!label] error:", err);
+      await message.reply(`Label command failed: ${err.message}`);
+    }
+    return;
+  }
+
   if (message.content.startsWith("!doj")) {
     if (!ADMIN_IDS.includes(message.author.id)) {
       await message.reply("This command is restricted to administrators.");
