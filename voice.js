@@ -209,42 +209,57 @@ export async function joinChannel(guild, voiceChannel, { passive = false } = {})
     const closeCode = newState.closeCode ?? "n/a";
     console.log(`[Voice] Disconnected from #${voiceChannel.name} — reason: ${reason}, closeCode: ${closeCode}`);
 
+    /* ── Close code 4014: forcibly removed (kicked / moved by a mod). ── */
     if (
       reason === VoiceConnectionDisconnectReason.WebSocketClose &&
       closeCode === 4014
     ) {
-      /* 4014 = forcibly removed (kicked / moved). Discord won't auto-reconnect.
-         Mark the channel as "evicted" for 5 minutes so the bot.js guardian doesn't
-         immediately re-join — that respected the mod's intent to kick her. */
       console.warn(`[Voice] 4014 close in #${voiceChannel.name} — honoring eviction for 5 min.`);
       recentEvictions.set(voiceChannel.id, Date.now() + 5 * 60 * 1000);
       try { connection.destroy(); } catch {}
       return;
     }
 
+    /* ── Close codes that REQUIRE a fresh handshake (rejoin can't fix these): ──
+        4006 — Session no longer valid (gateway nuked the session).
+        4009 — Session timeout.
+        4015 — Voice server crashed.
+        Skip the rejoin race and go straight to destroy → guardian fresh-join. */
+    if (
+      reason === VoiceConnectionDisconnectReason.WebSocketClose &&
+      (closeCode === 4006 || closeCode === 4009 || closeCode === 4015)
+    ) {
+      console.warn(`[Voice] Close ${closeCode} in #${voiceChannel.name} — session invalid, forcing fresh join.`);
+      try { connection.destroy(); } catch {}
+      return;
+    }
+
     /* Race auto-recovery: if the voice manager moves to Signalling/Connecting
-       within 5s, recovery is in progress. Otherwise rejoin manually. */
+       within 3s, recovery is in progress. Otherwise rejoin manually. */
     try {
       await Promise.race([
-        entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
-        entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+        entersState(connection, VoiceConnectionStatus.Signalling, 3_000),
+        entersState(connection, VoiceConnectionStatus.Connecting, 3_000),
       ]);
       console.log(`[Voice] Auto-recovery in progress for #${voiceChannel.name}...`);
       return;
     } catch {
-      /* No auto-recovery — try manual rejoin a few times then surrender to guardian */
+      /* No auto-recovery — try a quick manual rejoin, then destroy fast. */
     }
 
-    if (connection.rejoinAttempts < 5) {
-      const delay = (connection.rejoinAttempts + 1) * 5_000;
-      console.log(`[Voice] Manual rejoin attempt ${connection.rejoinAttempts + 1}/5 in ${delay / 1000}s...`);
+    /* Fast-fail rejoin: 2 attempts at 2s and 4s. If both fail, destroy and let
+       the immediate-recovery handler + guardian re-establish a fresh session.
+       The old 5-attempt × 5s-each cascade meant up to 75s of dead air. */
+    if (connection.rejoinAttempts < 2) {
+      const delay = (connection.rejoinAttempts + 1) * 2_000;
+      console.log(`[Voice] Manual rejoin attempt ${connection.rejoinAttempts + 1}/2 in ${delay / 1000}s...`);
       await new Promise(r => setTimeout(r, delay));
       try { connection.rejoin(); } catch (err) {
         console.warn(`[Voice] rejoin() threw: ${err.message} — destroying for guardian.`);
         try { connection.destroy(); } catch {}
       }
     } else {
-      console.warn(`[Voice] Exhausted 5 rejoin attempts for #${voiceChannel.name} — destroying for guardian.`);
+      console.warn(`[Voice] Exhausted 2 rejoin attempts for #${voiceChannel.name} — destroying for fresh join.`);
       try { connection.destroy(); } catch {}
     }
   });
@@ -316,41 +331,55 @@ export async function joinChannel(guild, voiceChannel, { passive = false } = {})
 
   /* ── Heartbeat watchdog ──────────────────────────────
      The voice library is event-driven, but on cloud hosts (Railway / Vultr)
-     the UDP socket can silently flatline without firing Disconnected. We
-     sample status every 10 seconds and additionally require that the
-     connection is sitting in Ready (the only fully-healthy state) at least
-     once every 60 seconds — anything else for 60s straight forces a
-     destroy → fresh-join. We also use entersState as a *positive* check so
-     a connection mid-recovery isn't killed prematurely. */
+     the UDP socket can silently flatline without firing Disconnected. Tight
+     loop: sample every 5s. Soft rejoin at 10s stuck. Hard destroy at 20s.
+     We also peek at the underlying networking state — if its UDP socket is
+     reporting "closed", we destroy immediately regardless of the high-level
+     status (which can lie about Ready when UDP is dead). */
   let lastReadyAt = Date.now();
   let stuckTicks  = 0;
   const heartbeat = setInterval(async () => {
     const status = connection.state.status;
+
+    /* ── Deep UDP-level health check: when the high-level status says Ready
+          but the underlying networking has actually closed its UDP socket,
+          treat it as dead air and destroy. This is the silent-drop case the
+          old watchdog could miss for up to 60s. */
     if (status === VoiceConnectionStatus.Ready) {
+      const networking = connection.state.networking;
+      const netCode    = networking?.state?.code;
+      /* networking.state.code values from @discordjs/voice:
+         0=OpeningWs, 1=Identifying, 2=UdpHandshaking, 3=SelectingProtocol,
+         4=Ready, 5=Resuming, 6=Closed.  */
+      if (netCode === 6) {
+        console.warn(`[Voice:Heartbeat] #${voiceChannel.name} reports Ready but UDP networking is CLOSED — destroying.`);
+        try { connection.destroy(); } catch {}
+        return;
+      }
       lastReadyAt = Date.now();
       stuckTicks  = 0;
       return;
     }
+
     /* Mid-recovery states get a brief grace period via entersState. */
     if (
       status === VoiceConnectionStatus.Signalling ||
       status === VoiceConnectionStatus.Connecting
     ) {
       try {
-        await entersState(connection, VoiceConnectionStatus.Ready, 8_000);
+        await entersState(connection, VoiceConnectionStatus.Ready, 5_000);
         lastReadyAt = Date.now();
         stuckTicks  = 0;
         return;
       } catch { /* fall through into stuck handling */ }
     }
+
     stuckTicks++;
     const stuckSeconds = Math.round((Date.now() - lastReadyAt) / 1000);
     console.warn(`[Voice:Heartbeat] #${voiceChannel.name} status=${status} (stuck ${stuckSeconds}s, tick ${stuckTicks})`);
 
-    /* Try a soft rejoin first (re-sends voice state without tearing the
-       connection down) — this fixes most transient WebSocket hiccups
-       without losing the receiver subscription. */
-    if (stuckTicks === 3) {
+    /* Soft rejoin at 10s stuck — re-sends voice state without tearing down. */
+    if (stuckTicks === 2) {
       try {
         console.warn(`[Voice:Heartbeat] Attempting soft rejoin in #${voiceChannel.name}...`);
         connection.rejoin();
@@ -359,12 +388,13 @@ export async function joinChannel(guild, voiceChannel, { passive = false } = {})
       }
     }
 
-    if (stuckSeconds >= 60 || stuckTicks >= 6) {
+    /* Hard destroy at 20s stuck (was 60s) — Destroyed handler triggers
+       immediate-recovery fresh-join with a new session. */
+    if (stuckSeconds >= 20 || stuckTicks >= 4) {
       console.warn(`[Voice:Heartbeat] Forcing destroy — connection stuck ${stuckSeconds}s in ${status}.`);
       try { connection.destroy(); } catch {}
-      /* Destroyed handler will clear this interval AND trigger fresh-join recovery. */
     }
-  }, 10_000);
+  }, 5_000);
 
   connection.on(VoiceConnectionStatus.Destroyed, () => {
     clearInterval(heartbeat);

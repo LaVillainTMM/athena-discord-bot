@@ -2600,6 +2600,8 @@ client.once(Events.ClientReady, async () => {
   const guardianLastDelay = new Map(); /* channelId → last delay (ms) used, for exponential growth */
   const guardianCrossChannelWarned = new Set(); /* channelIds we've already warned about being held by a different-channel passive conn (avoids log spam) */
 
+  /* Guardian tick reduced from 30s → 10s so a dropped session is re-established
+     within seconds instead of up to half a minute later. */
   setInterval(async () => {
     for (const [, guild] of client.guilds.cache) {
       for (const [channelId, session] of activeSessions) {
@@ -2669,7 +2671,7 @@ client.once(Events.ClientReady, async () => {
           });
       }
     }
-  }, 30_000);
+  }, 10_000);
 });
 
 /* ---------------- LOGIN ---------------- */
