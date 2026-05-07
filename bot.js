@@ -910,6 +910,35 @@ async function getAthenaResponse(content, athenaUserId, discordUserId, channel, 
     }
   }
 
+  /* ── Natural-language place-finder hook ──────────────────────────────────
+     If the user said something like "I just moved to Austin" or "find me
+     places in Brooklyn", run the place finder and inject results as context
+     so Athena can hand them a real list with directions in her reply. */
+  let placesBlock = "";
+  try {
+    const { detectPlaceRequest, findPlaces } = await import("./lib/placeFinder.js");
+    const req = detectPlaceRequest(content);
+    if (req) {
+      console.log(`[PlaceFinder] Detected request → city="${req.city}" interests=[${req.interests.join(",")}]`);
+      try {
+        const places = await findPlaces({ city: req.city, interests: req.interests, count: 6 });
+        if (places.length) {
+          const lines = places.map((p, i) =>
+            `${i + 1}. ${p.name} (${p.category}${p.rating ? ` · ${p.rating}` : ""}) — ${p.address}\n` +
+            `   Vibe: ${p.vibe}\n   Why: ${p.why}\n   Maps: ${p.mapsUrl}\n   Directions: ${p.directionsUrl}`
+          ).join("\n\n");
+          placesBlock =
+            `[LOCAL PLACE RECOMMENDATIONS — ${req.city}]\n` +
+            `Live results from Google Search (well-reviewed, currently open). ` +
+            `Present these to the user with the direct Google Maps links so they can tap to open / get directions.\n\n` +
+            `${lines}\n[END LOCAL PLACE RECOMMENDATIONS]\n\n`;
+        }
+      } catch (err) {
+        console.warn(`[PlaceFinder] lookup failed for "${req.city}": ${err.message}`);
+      }
+    }
+  } catch (_) { /* module optional */ }
+
   /* Include voice call context only if the sender was in a recent call,
      or if this was an explicit voice session query (already in serverContext) */
   const voiceAwareness = voiceSessionRequest
@@ -928,7 +957,7 @@ async function getAthenaResponse(content, athenaUserId, discordUserId, channel, 
     console.warn(`[MusicAnalytics] Roster digest skipped: ${err.message}`);
   }
 
-  const fullMessage = liveContext + knowledgeBlock + weatherBlock + labelBlock + voiceAwareness + serverContext + content;
+  const fullMessage = liveContext + knowledgeBlock + weatherBlock + placesBlock + labelBlock + voiceAwareness + serverContext + content;
 
   let reply;
   try {
@@ -1415,6 +1444,44 @@ client.on(Events.MessageCreate, async message => {
     } catch (err) {
       console.error("[!research] error:", err);
       await message.reply(`Research failed: ${err.message}`);
+    }
+    return;
+  }
+
+  /* ── !places <city> [interests...] — local hangout recommendations ──────── */
+  if (trimmed.toLowerCase().startsWith("!places")) {
+    const args = trimmed.slice("!places".length).trim();
+    if (!args) {
+      await message.reply(
+        "Usage: `!places <city> [interests]`\n" +
+        "Example: `!places Austin coffee music outdoors`"
+      );
+      return;
+    }
+    /* Split on comma first; if no comma, treat first 1-3 capitalized words as the city. */
+    let city, interests = [];
+    if (args.includes(",")) {
+      const [c, ...rest] = args.split(",");
+      city = c.trim();
+      interests = rest.join(",").split(/[ ,]+/).map(s => s.trim()).filter(Boolean);
+    } else {
+      const parts = args.split(/\s+/);
+      const cityWords = [];
+      for (const p of parts) {
+        if (/^[A-Z]/.test(p) && cityWords.length < 3) cityWords.push(p);
+        else { interests.push(p); }
+      }
+      city = cityWords.join(" ") || parts[0];
+      interests = parts.slice(cityWords.length);
+    }
+    try {
+      await message.channel.sendTyping();
+      const { findPlaces, formatPlacesForDiscord } = await import("./lib/placeFinder.js");
+      const places = await findPlaces({ city, interests, count: 6 });
+      await message.reply(formatPlacesForDiscord(city, places));
+    } catch (err) {
+      console.error("[!places] error:", err);
+      await message.reply(`Couldn't pull recommendations: ${err.message}`);
     }
     return;
   }
@@ -2321,6 +2388,25 @@ client.once(Events.ClientReady, async () => {
       console.error("[RegionalProfile] Weekly sweep failed:", err.message)
     );
   }, 7 * 24 * 60 * 60 * 1000);
+
+  /* 5.9. Regional DEEP profile sweep — per-region living profile covering
+          weather snapshot, population, business count, crime stats, active
+          + canceled construction projects, and landscape changes. Pulled via
+          Gemini grounded search (accredited sources) plus a live OpenWeather
+          snapshot for the regional capital. Runs ~6 minutes after startup
+          (after the news + Britannica passes), then every 3 days. */
+  const { runDeepProfileSweep } = await import("./lib/regionalDeepProfile.js");
+  setTimeout(() => {
+    runDeepProfileSweep(REGIONS).catch(err =>
+      console.error("[RegionalDeepProfile] Startup sweep failed:", err.message)
+    );
+  }, 6 * 60_000);
+
+  setInterval(() => {
+    runDeepProfileSweep(REGIONS).catch(err =>
+      console.error("[RegionalDeepProfile] Recurring sweep failed:", err.message)
+    );
+  }, 3 * 24 * 60 * 60 * 1000);
 
   /* 5.6. Weekly quiz reminders — DM every member who hasn't completed the quiz */
   const primaryGuild = primaryGuildId ? client.guilds.cache.get(primaryGuildId) : client.guilds.cache.first();
