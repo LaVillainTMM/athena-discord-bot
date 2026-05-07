@@ -1387,28 +1387,6 @@ client.on(Events.MessageCreate, async message => {
     return;
   }
 
-  /* ── !ready — confirm friend request, unlocks !quiz ─────────────────────── */
-  if (trimmed.toLowerCase() === "!ready") {
-    if (!isDM) {
-      await message.reply("Send `!ready` in DM to confirm — that proves we're friends.");
-      return;
-    }
-    try {
-      await firestore.collection("quiz_approved").doc(message.author.id).set({
-        userId:     message.author.id,
-        username:   message.author.username,
-        approvedAt: new Date().toISOString(),
-      });
-      await message.reply(
-        "Friend confirmation received. You're cleared to take the NationZ Quiz — run `!quiz` whenever you're ready."
-      );
-    } catch (err) {
-      console.error("[!ready] error:", err);
-      await message.reply(`Could not record your confirmation: ${err.message}`);
-    }
-    return;
-  }
-
   /* ── !label / !roster — record-label admin commands ─────────────────────── */
   if (message.content.startsWith("!label") || message.content.startsWith("!roster")) {
     if (!ADMIN_IDS.includes(message.author.id)) {
@@ -1614,22 +1592,6 @@ client.on(Events.MessageCreate, async message => {
     const alreadyDone = await hasCompletedQuiz(message.author.id);
     if (alreadyDone) {
       await message.reply("Your DBI Quiz is already on file. Your nation has been determined. No need to retake it.");
-      return;
-    }
-
-    /* ── Friend-request gate ─────────────────────────────────────────────────
-       Athena will only DM the quiz to users who have proven they're friends —
-       that means right-clicking her name, hitting "Add Friend", and DMing
-       her `!ready` to confirm. We persist confirmations in `quiz_approved`
-       so a member only does this once. */
-    const approvedRef = await firestore.collection("quiz_approved").doc(message.author.id).get();
-    if (!approvedRef.exists) {
-      await message.reply(
-        "Before I send you the quiz, I need a friend request from you.\n\n" +
-        "1. Right-click my name and select **Add Friend**.\n" +
-        "2. Once Discord shows the request was sent, **DM me** `!ready` to confirm.\n" +
-        "3. Then run `!quiz` again — and we'll get started."
-      );
       return;
     }
 
