@@ -1387,6 +1387,38 @@ client.on(Events.MessageCreate, async message => {
     return;
   }
 
+  /* ── !research <subject> — queue a deep-research dossier (admin only) ───── */
+  if (trimmed.toLowerCase().startsWith("!research ") || trimmed.toLowerCase() === "!research") {
+    if (!ADMIN_IDS.includes(message.author.id)) {
+      await message.reply("This command is restricted to administrators.");
+      return;
+    }
+    const subject = trimmed.slice("!research".length).trim();
+    if (!subject) {
+      await message.reply("Usage: `!research <Person, Place, or Thing>`\nExample: `!research Chicago`");
+      return;
+    }
+    try {
+      const { enqueueSubject, processSubject } = await import("./lib/deepResearch.js");
+      const queued = await enqueueSubject(subject, `manual:${message.author.username}`);
+      if (queued) {
+        await message.reply(`Queued deep research on **${subject}** — running it now (WHO / WHAT / WHERE / HOW).`);
+      } else {
+        await message.reply(`**${subject}** is already queued or already researched. Re-running anyway.`);
+      }
+      const stored = await processSubject(subject, `manual:${message.author.username}`);
+      await message.reply(
+        stored > 0
+          ? `Done. Stored **${stored}** new fact(s) on ${subject} in my knowledge base.`
+          : `Could not produce accredited sourcing for **${subject}** this pass — try again later or refine the name.`
+      );
+    } catch (err) {
+      console.error("[!research] error:", err);
+      await message.reply(`Research failed: ${err.message}`);
+    }
+    return;
+  }
+
   /* ── !label / !roster — record-label admin commands ─────────────────────── */
   if (message.content.startsWith("!label") || message.content.startsWith("!roster")) {
     if (!ADMIN_IDS.includes(message.author.id)) {
@@ -2082,6 +2114,18 @@ client.once(Events.ClientReady, async () => {
      she generates an AI reply and speaks it back via TTS. Cooldown per
      user prevents flooding when one person is talking continuously. */
   setTranscriptHandler(handleVoiceTranscript);
+
+  /* ── Deep-research worker ─────────────────────────────────────────────
+     Drains research_queue every 90s. When new knowledge lands in
+     athena_knowledge, knowledgeUpdater auto-extracts proper-noun subjects
+     and queues them; this worker turns each subject into a WHO/WHAT/
+     WHERE/HOW dossier and stores it back as new knowledge. */
+  try {
+    const { startDeepResearchWorker } = await import("./lib/deepResearch.js");
+    startDeepResearchWorker();
+  } catch (err) {
+    console.error("[DeepResearch] worker boot failed:", err.message);
+  }
 
   /* 0. Firestore startup self-test — full write/read/delete probe per critical
         collection. Each probe writes a sentinel doc with id "__startup_probe__",
