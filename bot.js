@@ -1448,6 +1448,82 @@ client.on(Events.MessageCreate, async message => {
     return;
   }
 
+  /* ── !history [topic | status] — world-history curriculum ──────────────── */
+  if (trimmed.toLowerCase().startsWith("!history")) {
+    if (!ADMIN_IDS.includes(message.author.id)) {
+      await message.reply("This command is restricted to administrators.");
+      return;
+    }
+    const arg = trimmed.slice("!history".length).trim();
+    try {
+      const { learnTopic, runDailyHistorySweep, coverageStats } = await import("./lib/worldHistory.js");
+      if (!arg || arg.toLowerCase() === "status") {
+        const s = await coverageStats();
+        await message.reply(
+          `World-history curriculum: **${s.covered}** topics covered ` +
+          `(${s.pctCurriculum}% of curated curriculum of ${s.curriculum}). ` +
+          `Daily sweep continues until everything is learned, then keeps deepening.`
+        );
+        return;
+      }
+      if (arg.toLowerCase() === "sweep") {
+        await message.reply("Running an extra daily history sweep now...");
+        const n = await runDailyHistorySweep(10);
+        await message.reply(`History sweep complete — stored **${n}** new entries.`);
+        return;
+      }
+      await message.reply(`Researching **${arg}** for the world-history archive...`);
+      const stored = await learnTopic(arg);
+      await message.reply(
+        stored > 0
+          ? `Stored **${stored}** scholarly section(s) on ${arg}.`
+          : `Couldn't produce accredited sourcing for **${arg}** this pass.`
+      );
+    } catch (err) {
+      console.error("[!history] error:", err);
+      await message.reply(`History command failed: ${err.message}`);
+    }
+    return;
+  }
+
+  /* ── !declassified [topic | status] — declassified-records archive ──────── */
+  if (trimmed.toLowerCase().startsWith("!declassified")) {
+    if (!ADMIN_IDS.includes(message.author.id)) {
+      await message.reply("This command is restricted to administrators.");
+      return;
+    }
+    const arg = trimmed.slice("!declassified".length).trim();
+    try {
+      const { learnDeclassifiedTopic, runDailyDeclassifiedSweep, declassifiedCoverageStats } =
+        await import("./lib/declassifiedArchives.js");
+      if (!arg || arg.toLowerCase() === "status") {
+        const s = await declassifiedCoverageStats();
+        await message.reply(
+          `Declassified archive: **${s.covered}/${s.curriculum}** curated topics covered. ` +
+          `Pulled from CIA CREST, FBI Vault, NARA, FRUS, NSA archive (GWU), and presidential libraries.`
+        );
+        return;
+      }
+      if (arg.toLowerCase() === "sweep") {
+        await message.reply("Running an extra declassified sweep now...");
+        const n = await runDailyDeclassifiedSweep(3);
+        await message.reply(`Declassified sweep complete — stored **${n}** new entries.`);
+        return;
+      }
+      await message.reply(`Researching declassified records on **${arg}**...`);
+      const stored = await learnDeclassifiedTopic(arg);
+      await message.reply(
+        stored > 0
+          ? `Stored **${stored}** declassified section(s) on ${arg}.`
+          : `Couldn't produce accredited released-records sourcing for **${arg}** this pass.`
+      );
+    } catch (err) {
+      console.error("[!declassified] error:", err);
+      await message.reply(`Declassified command failed: ${err.message}`);
+    }
+    return;
+  }
+
   /* ── !places <city> [interests...] — local hangout recommendations ──────── */
   if (trimmed.toLowerCase().startsWith("!places")) {
     const args = trimmed.slice("!places".length).trim();
@@ -2407,6 +2483,40 @@ client.once(Events.ClientReady, async () => {
       console.error("[RegionalDeepProfile] Recurring sweep failed:", err.message)
     );
   }, 3 * 24 * 60 * 60 * 1000);
+
+  /* 5.10. World-history curriculum sweep — every day Athena learns 10 new
+           historical topics from her curated era × region curriculum (and
+           AI-suggested topics once the curriculum is exhausted). Runs ~9 min
+           after startup, then every 24h. Curriculum is breadth-first across
+           all eras so coverage builds evenly. */
+  const { runDailyHistorySweep } = await import("./lib/worldHistory.js");
+  setTimeout(() => {
+    runDailyHistorySweep(10).catch(err =>
+      console.error("[WorldHistory] Startup sweep failed:", err.message)
+    );
+  }, 9 * 60_000);
+  setInterval(() => {
+    runDailyHistorySweep(10).catch(err =>
+      console.error("[WorldHistory] Daily sweep failed:", err.message)
+    );
+  }, 24 * 60 * 60 * 1000);
+
+  /* 5.11. Declassified-archives sweep — every day Athena pulls 3 declassified
+           programs/episodes from official reading rooms (CIA CREST, FBI Vault,
+           NARA, FRUS, presidential libraries, National Security Archive at
+           GWU). Released material only — Athena's policy excludes leaks and
+           unverified intel. Runs ~12 min after startup, then every 24h. */
+  const { runDailyDeclassifiedSweep } = await import("./lib/declassifiedArchives.js");
+  setTimeout(() => {
+    runDailyDeclassifiedSweep(3).catch(err =>
+      console.error("[Declassified] Startup sweep failed:", err.message)
+    );
+  }, 12 * 60_000);
+  setInterval(() => {
+    runDailyDeclassifiedSweep(3).catch(err =>
+      console.error("[Declassified] Daily sweep failed:", err.message)
+    );
+  }, 24 * 60 * 60 * 1000);
 
   /* 5.6. Weekly quiz reminders — DM every member who hasn't completed the quiz */
   const primaryGuild = primaryGuildId ? client.guilds.cache.get(primaryGuildId) : client.guilds.cache.first();
