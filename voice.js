@@ -21,6 +21,14 @@ import { admin, firestore } from "./firebase.js";
 /* Map of guildId → { connection, player, channelId } */
 const voiceConnections = new Map();
 
+/* ── Active-listen callback ──
+   bot.js registers a function here at startup; voice.js calls it after every
+   successful transcription so Athena can decide whether to speak back. */
+let onTranscriptCallback = null;
+export function setTranscriptHandler(fn) {
+  onTranscriptCallback = typeof fn === "function" ? fn : null;
+}
+
 /* Channels Athena was kicked from (4014) — guardian honors this for 5min.
    Map<channelId, expiresAtMs>. Exported for bot.js guardian. */
 export const recentEvictions = new Map();
@@ -338,6 +346,19 @@ export async function joinChannel(guild, voiceChannel, { passive = false } = {})
     stuckTicks++;
     const stuckSeconds = Math.round((Date.now() - lastReadyAt) / 1000);
     console.warn(`[Voice:Heartbeat] #${voiceChannel.name} status=${status} (stuck ${stuckSeconds}s, tick ${stuckTicks})`);
+
+    /* Try a soft rejoin first (re-sends voice state without tearing the
+       connection down) — this fixes most transient WebSocket hiccups
+       without losing the receiver subscription. */
+    if (stuckTicks === 3) {
+      try {
+        console.warn(`[Voice:Heartbeat] Attempting soft rejoin in #${voiceChannel.name}...`);
+        connection.rejoin();
+      } catch (err) {
+        console.warn(`[Voice:Heartbeat] rejoin() threw: ${err.message}`);
+      }
+    }
+
     if (stuckSeconds >= 60 || stuckTicks >= 6) {
       console.warn(`[Voice:Heartbeat] Forcing destroy — connection stuck ${stuckSeconds}s in ${status}.`);
       try { connection.destroy(); } catch {}
@@ -591,6 +612,21 @@ async function processVoiceSample(userId, user, guild, opusChunks, durationMs, s
       sampleSizeBytes: pcmBuffer.length,
       sessionId: sessionId || null,
     });
+
+    /* Active-listen — hand the transcript to bot.js so it can decide whether
+       Athena should speak back. Fire-and-forget; failures must not block the
+       voice loop. The callback receives everything it needs to reply in the
+       same channel and to know who spoke. */
+    if (onTranscriptCallback && transcript && transcript.trim()) {
+      const channelId = voiceConnections.get(guild.id)?.channelId;
+      const channel   = channelId ? guild.channels.cache.get(channelId) : null;
+      Promise.resolve()
+        .then(() => onTranscriptCallback({
+          user, userId, guild, channel, transcript: transcript.trim(),
+          sessionId: sessionId || null, durationMs,
+        }))
+        .catch(err => console.error("[VoiceListen] Active-listen handler error:", err.message));
+    }
   } catch (err) {
     console.error(`[VoiceListen] processVoiceSample error for ${user.username}:`, err.message);
   } finally {

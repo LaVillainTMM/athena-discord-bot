@@ -32,7 +32,7 @@ import {
   getKnownChannels,
   getActivityPeaks,
 } from "./athenaDiscord.js";
-import { joinChannel, leaveChannel, isInVoice, getVoiceChannelId, speak, startListeningInChannel, isChannelEvicted } from "./voice.js";
+import { joinChannel, leaveChannel, isInVoice, getVoiceChannelId, speak, startListeningInChannel, isChannelEvicted, setTranscriptHandler } from "./voice.js";
 import { sendAudioMessage, isAudioRequest, splitResponseForAudio } from "./audioMessage.js";
 import { syncLatestDojPressReleases, searchAndStoreDoj, getDojKnowledgeSummary } from "./lib/dojKnowledge.js";
 import { storeMemberVisualProfile, identifyMembersInImage } from "./visualIdentity.js";
@@ -1073,6 +1073,102 @@ async function handleLinkAccounts(message) {
   );
 }
 
+/* ──────────────────────────────────────────────────────
+   "DUH" ROLE GATE — business / record-label / tax topics
+   are restricted to members carrying the "Duh" role in the
+   primary DBI guild. We classify intent on the way in so a
+   refusal happens before any AI call (saves tokens and
+   makes the rule visible to the user).
+────────────────────────────────────────────────────── */
+const DUH_ROLE_NAME = "Duh";
+
+const BUSINESS_TOPIC_PATTERNS = [
+  /\b(llc|s[- ]?corp|c[- ]?corp|sole prop(rietor)?|partnership|delaware|incorpor)/i,
+  /\b(operating agreement|cap table|equity|shareholder|profit ?interest|membership interest)\b/i,
+  /\b(reg ?d|reg ?cf|reg ?a\+?|rule ?506|safe note|convertible note|ppm|accredited investor)\b/i,
+  /\b(tax|irs|1099|w-?9|w-?2|k-?1|deduction|write[- ]?off|quarterly est|self[- ]?employment)\b/i,
+  /\b(boi|cta|fincen|ein|nexus|sales tax|wayfair|trademark|uspto|copyright|title 17|mma|dmca)\b/i,
+  /\b(label|roster|signing|advance|recoup|royalt(y|ies)|mechanical|publishing|sync|master use)\b/i,
+  /\b(soundexchange|mlc|hfa|ascap|bmi|sesac|gmr|distribut(ion|or)|360 deal|p&d)\b/i,
+  /\b(booking|venue|festival|tour(ing)?|rider|guarantee|merch|ticket(ing|s)|capacity)\b/i,
+  /\b(business|company|invest(or|ment|ing)|fundrais|raise capital|grow (the|our) (label|company|business))\b/i,
+];
+
+function requiresDuhRole(content) {
+  if (!content) return false;
+  return BUSINESS_TOPIC_PATTERNS.some(rx => rx.test(content));
+}
+
+async function hasDuhRole(userId) {
+  /* Admins always pass. */
+  if (ADMIN_IDS.includes(userId)) return true;
+  if (!primaryGuildId) return false;
+  try {
+    const guild  = client.guilds.cache.get(primaryGuildId);
+    if (!guild) return false;
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (!member) return false;
+    return member.roles.cache.some(r => r.name === DUH_ROLE_NAME);
+  } catch (err) {
+    console.warn("[DuhGate] role lookup failed:", err.message);
+    return false;
+  }
+}
+
+/* ──────────────────────────────────────────────────────
+   ACTIVE VOICE LISTENING — registered with voice.js via
+   setTranscriptHandler() during ClientReady. Fires on
+   every successful Whisper transcription.
+
+   Athena replies (TTS in the same voice channel) when:
+     - the transcript mentions her name, OR
+     - the call has only one human besides her (clearly 1:1)
+
+   A short per-user cooldown prevents her from talking over
+   continuous speech, and the gemini call shares her normal
+   pipeline so the same persona / knowledge / Duh-role gate
+   apply to voice exactly like text.
+────────────────────────────────────────────────────── */
+const voiceReplyCooldown = new Map(); /* userId → lastReplyAt(ms) */
+const VOICE_REPLY_COOLDOWN_MS = 6_000;
+const VOICE_NAME_RX = /\b(athena|atina|athina|athene)\b/i;
+
+async function handleVoiceTranscript({ user, userId, guild, channel, transcript }) {
+  if (!transcript || transcript.length < 2) return;
+  if (!guild || !channel) return;
+
+  /* Decide if this utterance was directed at Athena. */
+  const humans = [...channel.members.values()].filter(m => !m.user.bot).length;
+  const addressed = VOICE_NAME_RX.test(transcript) || humans <= 1;
+  if (!addressed) return;
+
+  /* Cooldown */
+  const last = voiceReplyCooldown.get(userId) || 0;
+  if (Date.now() - last < VOICE_REPLY_COOLDOWN_MS) return;
+  voiceReplyCooldown.set(userId, Date.now());
+
+  console.log(`[VoiceListen] Athena addressed by ${user.username}: "${transcript.substring(0, 80)}"`);
+
+  /* Duh-role gate also applies to voice. */
+  if (requiresDuhRole(transcript) && !(await hasDuhRole(userId))) {
+    await speak(guild, channel,
+      `Sorry ${user.username}, business and label talk is reserved for members with the Duh tag. Catch me on something else.`
+    ).catch(() => {});
+    return;
+  }
+
+  try {
+    const athenaUserId = await getOrCreateAthenaUser(user);
+    let reply = await getAthenaResponse(transcript, athenaUserId, userId, channel, guild);
+    if (!reply || !reply.trim()) return;
+    /* Trim for spoken reply — long answers turn into multi-minute audio. */
+    if (reply.length > 600) reply = reply.substring(0, 600).replace(/\s+\S*$/, "") + "...";
+    await speak(guild, channel, reply);
+  } catch (err) {
+    console.error("[VoiceListen] reply generation failed:", err.message);
+  }
+}
+
 /* ---------------- MESSAGE HANDLER ---------------- */
 client.on(Events.MessageCreate, async message => {
   if (message.author.bot) return;
@@ -1291,6 +1387,28 @@ client.on(Events.MessageCreate, async message => {
     return;
   }
 
+  /* ── !ready — confirm friend request, unlocks !quiz ─────────────────────── */
+  if (trimmed.toLowerCase() === "!ready") {
+    if (!isDM) {
+      await message.reply("Send `!ready` in DM to confirm — that proves we're friends.");
+      return;
+    }
+    try {
+      await firestore.collection("quiz_approved").doc(message.author.id).set({
+        userId:     message.author.id,
+        username:   message.author.username,
+        approvedAt: new Date().toISOString(),
+      });
+      await message.reply(
+        "Friend confirmation received. You're cleared to take the NationZ Quiz — run `!quiz` whenever you're ready."
+      );
+    } catch (err) {
+      console.error("[!ready] error:", err);
+      await message.reply(`Could not record your confirmation: ${err.message}`);
+    }
+    return;
+  }
+
   /* ── !label / !roster — record-label admin commands ─────────────────────── */
   if (message.content.startsWith("!label") || message.content.startsWith("!roster")) {
     if (!ADMIN_IDS.includes(message.author.id)) {
@@ -1499,6 +1617,22 @@ client.on(Events.MessageCreate, async message => {
       return;
     }
 
+    /* ── Friend-request gate ─────────────────────────────────────────────────
+       Athena will only DM the quiz to users who have proven they're friends —
+       that means right-clicking her name, hitting "Add Friend", and DMing
+       her `!ready` to confirm. We persist confirmations in `quiz_approved`
+       so a member only does this once. */
+    const approvedRef = await firestore.collection("quiz_approved").doc(message.author.id).get();
+    if (!approvedRef.exists) {
+      await message.reply(
+        "Before I send you the quiz, I need a friend request from you.\n\n" +
+        "1. Right-click my name and select **Add Friend**.\n" +
+        "2. Once Discord shows the request was sent, **DM me** `!ready` to confirm.\n" +
+        "3. Then run `!quiz` again — and we'll get started."
+      );
+      return;
+    }
+
     /* Server message — redirect to DMs */
     if (!isDM) {
       await message.reply("Starting your DBI Quiz in DMs. Check your direct messages.");
@@ -1570,6 +1704,16 @@ client.on(Events.MessageCreate, async message => {
 
     const athenaUserId = await getOrCreateAthenaUser(message.author);
     recordActivity(athenaUserId, "discord").catch(() => {});
+
+    /* ── Duh-role gate: business / label / tax topics only for "Duh" members ── */
+    if (requiresDuhRole(message.content) && !(await hasDuhRole(message.author.id))) {
+      await message.reply(
+        "Business and record-label conversations — including tax code, entity structure, " +
+        "raises, royalties, and the label roster — are reserved for members with the **Duh** tag. " +
+        "Talk to LaVillain about access."
+      );
+      return;
+    }
 
     await message.channel.sendTyping();
 
@@ -1969,6 +2113,13 @@ client.once(Events.ClientReady, async () => {
     primaryGuildId = client.guilds.cache.first().id;
     console.log(`[Athena] Primary guild: ${client.guilds.cache.first().name} (${primaryGuildId})`);
   }
+
+  /* ── Active voice listening ───────────────────────────────────────────
+     When Athena is in a voice channel and someone says her name (or it's
+     a quiet 1:1 call where every utterance is clearly directed at her),
+     she generates an AI reply and speaks it back via TTS. Cooldown per
+     user prevents flooding when one person is talking continuously. */
+  setTranscriptHandler(handleVoiceTranscript);
 
   /* 0. Firestore startup self-test — full write/read/delete probe per critical
         collection. Each probe writes a sentinel doc with id "__startup_probe__",
