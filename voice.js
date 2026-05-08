@@ -20,6 +20,11 @@ import { admin, firestore } from "./firebase.js";
 
 /* Map of guildId → { connection, player, channelId } */
 const voiceConnections = new Map();
+/* In-flight join tracker — guildId → Promise<state>. Prevents the
+   guardian from firing a second joinChannel while the first is still
+   handshaking (which creates parallel UDP attempts that knock each other
+   out and explains why we saw two back-to-back failures 10s apart). */
+const inFlightJoins = new Map();
 
 /* ── Active-listen callback ──
    bot.js registers a function here at startup; voice.js calls it after every
@@ -128,7 +133,26 @@ async function gttsTtsStream(text) {
 
 /* ── Join a voice channel ── */
 /* passive = true → selfMute so Athena can listen without appearing as a speaker */
-export async function joinChannel(guild, voiceChannel, { passive = false } = {}) {
+export async function joinChannel(guild, voiceChannel, opts = {}) {
+  /* ── De-dupe concurrent joins for the same guild ──
+     If a join is already in flight (e.g. AutoJoin started one and the
+     guardian fires 10s later), return the SAME promise instead of starting
+     a parallel handshake. The previous behaviour was creating two parallel
+     UDP attempts that knocked each other out — visible in the log as two
+     back-to-back "First join attempt failed" lines ~10s apart. */
+  const inFlight = inFlightJoins.get(guild.id);
+  if (inFlight) {
+    console.log(`[Voice] Join already in flight for guild ${guild.id} — awaiting existing attempt instead of starting parallel handshake.`);
+    return inFlight;
+  }
+  const promise = _joinChannelImpl(guild, voiceChannel, opts).finally(() => {
+    inFlightJoins.delete(guild.id);
+  });
+  inFlightJoins.set(guild.id, promise);
+  return promise;
+}
+
+async function _joinChannelImpl(guild, voiceChannel, { passive = false } = {}) {
   const existing = voiceConnections.get(guild.id);
   if (existing) {
     /* Already in this exact channel — return only if the connection is healthy.
