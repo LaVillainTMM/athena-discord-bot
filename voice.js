@@ -181,22 +181,51 @@ export async function joinChannel(guild, voiceChannel, { passive = false } = {})
     }
   }
 
-  const connection = joinVoiceChannel({
-    channelId: voiceChannel.id,
-    guildId:   guild.id,
-    adapterCreator: guild.voiceAdapterCreator,
-    selfDeaf: false,
-    selfMute: false, /* always unmuted — Athena should appear active in every call she joins */
-  });
+  /* ── Join with retry — Railway → Discord-voice UDP handshakes can take
+        20-25s under load. Single 15s attempt was failing constantly with
+        false "permissions" errors. Now: 30s first attempt, then one fresh
+        retry at 25s if it stalls. Total worst-case 55s, but eliminates the
+        "Athena never joins the call" bug we were seeing in production. */
+  const attemptJoin = async (timeoutMs) => {
+    const conn = joinVoiceChannel({
+      channelId: voiceChannel.id,
+      guildId:   guild.id,
+      adapterCreator: guild.voiceAdapterCreator,
+      selfDeaf: false,
+      selfMute: false, /* always unmuted — Athena should appear active in every call she joins */
+    });
+    try {
+      await entersState(conn, VoiceConnectionStatus.Ready, timeoutMs);
+      return conn;
+    } catch (err) {
+      /* IMPORTANT: wrap destroy in try/catch — if the connection self-destroyed
+         (e.g. WebSocket close), calling destroy() again throws "Cannot destroy
+         VoiceConnection - it has already been destroyed", which then gets
+         re-thrown up to the guardian and triggers exponential backoff for
+         what is actually just a benign cleanup race. */
+      try { conn.destroy(); } catch {}
+      throw err;
+    }
+  };
 
+  let connection;
   try {
-    await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
-  } catch (err) {
-    connection.destroy();
-    throw new Error(
-      `Timed out connecting to **${voiceChannel.name}**. ` +
-      `Verify the bot has Connect + Speak permissions on that channel in server settings.`
-    );
+    console.log(`[Voice] Joining #${voiceChannel.name} (attempt 1, 30s timeout)...`);
+    connection = await attemptJoin(30_000);
+  } catch (firstErr) {
+    console.warn(`[Voice] First join attempt failed for #${voiceChannel.name}: ${firstErr.message} — retrying once with fresh handshake.`);
+    /* Brief pause before retry — gives Discord voice gateway a moment to
+       drop the stale session so the second handshake gets a clean slate. */
+    await new Promise(r => setTimeout(r, 1500));
+    try {
+      connection = await attemptJoin(25_000);
+    } catch (secondErr) {
+      throw new Error(
+        `Timed out connecting to **${voiceChannel.name}** after 2 attempts (~57s). ` +
+        `If permissions are correct, this is usually a Railway → Discord voice UDP issue — ` +
+        `the guardian will retry with backoff.`
+      );
+    }
   }
 
   /* ── Reconnect on transient disconnects using proper rejoin() strategy ──
