@@ -329,47 +329,80 @@ export async function joinChannel(guild, voiceChannel, { passive = false } = {})
   voiceConnections.set(guild.id, state);
   console.log(`[Voice] Joined #${voiceChannel.name} in ${guild.name} (${passive ? "passive/silent" : "active"})`);
 
+  /* ── State-change logger — surfaces every transition in Railway logs so
+        silent drops are diagnosable. Keep it noisy on purpose. */
+  connection.on("stateChange", (oldState, newState) => {
+    if (oldState.status !== newState.status) {
+      console.log(`[Voice:State] #${voiceChannel.name}: ${oldState.status} → ${newState.status}`);
+    }
+  });
+
+  /* ── CRITICAL: auto re-attach the speaking listener whenever a fresh
+        connection is created for a channel that previously had one. This
+        fixes the "Athena stops responding after speaking once" bug —
+        speak() can trigger an internal destroy + re-create, and without
+        this re-attachment the new connection has no receiver subscription
+        so user audio never gets transcribed and she stays silent forever. */
+  const existingListenerCfg = activeListeners.get(voiceChannel.id);
+  if (existingListenerCfg) {
+    /* startListeningInChannel is idempotent via __athenaListenerAttached flag,
+       so calling it on a brand-new connection is safe and necessary. */
+    try {
+      startListeningInChannel(
+        connection,
+        guild,
+        existingListenerCfg.client,
+        existingListenerCfg.sessionId
+      );
+      console.log(`[Voice] Auto-re-attached listener to fresh connection in #${voiceChannel.name}`);
+    } catch (err) {
+      console.warn(`[Voice] Listener re-attach failed in #${voiceChannel.name}: ${err.message}`);
+    }
+  }
+
   /* ── Heartbeat watchdog ──────────────────────────────
-     The voice library is event-driven, but on cloud hosts (Railway / Vultr)
-     the UDP socket can silently flatline without firing Disconnected. Tight
-     loop: sample every 5s. Soft rejoin at 10s stuck. Hard destroy at 20s.
-     We also peek at the underlying networking state — if its UDP socket is
-     reporting "closed", we destroy immediately regardless of the high-level
-     status (which can lie about Ready when UDP is dead). */
-  let lastReadyAt = Date.now();
-  let stuckTicks  = 0;
+     Sample every 8s. Soft rejoin at 16s (tick 2). Hard destroy at 32s.
+     The thresholds were softened from 5s/20s after we found the tighter
+     loop was firing on transient blips that would have self-recovered,
+     causing destroy→rejoin thrash. UDP-closed detection requires TWO
+     consecutive samples before destroying to avoid false positives. */
+  let lastReadyAt    = Date.now();
+  let stuckTicks     = 0;
+  let udpClosedTicks = 0;
   const heartbeat = setInterval(async () => {
     const status = connection.state.status;
 
-    /* ── Deep UDP-level health check: when the high-level status says Ready
-          but the underlying networking has actually closed its UDP socket,
-          treat it as dead air and destroy. This is the silent-drop case the
-          old watchdog could miss for up to 60s. */
     if (status === VoiceConnectionStatus.Ready) {
-      const networking = connection.state.networking;
-      const netCode    = networking?.state?.code;
-      /* networking.state.code values from @discordjs/voice:
-         0=OpeningWs, 1=Identifying, 2=UdpHandshaking, 3=SelectingProtocol,
-         4=Ready, 5=Resuming, 6=Closed.  */
+      /* Deep UDP-level health check — but require 2 consecutive samples
+         showing networking.state.code === 6 (Closed) before destroying.
+         A single sample can race library transitions and false-fire. */
+      const netCode = connection.state.networking?.state?.code;
       if (netCode === 6) {
-        console.warn(`[Voice:Heartbeat] #${voiceChannel.name} reports Ready but UDP networking is CLOSED — destroying.`);
-        try { connection.destroy(); } catch {}
-        return;
+        udpClosedTicks++;
+        console.warn(`[Voice:Heartbeat] #${voiceChannel.name} Ready but UDP=Closed (tick ${udpClosedTicks}/2)`);
+        if (udpClosedTicks >= 2) {
+          console.warn(`[Voice:Heartbeat] #${voiceChannel.name} UDP confirmed dead — destroying.`);
+          try { connection.destroy(); } catch {}
+          return;
+        }
+      } else {
+        udpClosedTicks = 0;
       }
       lastReadyAt = Date.now();
       stuckTicks  = 0;
       return;
     }
 
-    /* Mid-recovery states get a brief grace period via entersState. */
+    /* Mid-recovery states get a generous grace period via entersState. */
     if (
       status === VoiceConnectionStatus.Signalling ||
       status === VoiceConnectionStatus.Connecting
     ) {
       try {
-        await entersState(connection, VoiceConnectionStatus.Ready, 5_000);
-        lastReadyAt = Date.now();
-        stuckTicks  = 0;
+        await entersState(connection, VoiceConnectionStatus.Ready, 10_000);
+        lastReadyAt    = Date.now();
+        stuckTicks     = 0;
+        udpClosedTicks = 0;
         return;
       } catch { /* fall through into stuck handling */ }
     }
@@ -378,7 +411,7 @@ export async function joinChannel(guild, voiceChannel, { passive = false } = {})
     const stuckSeconds = Math.round((Date.now() - lastReadyAt) / 1000);
     console.warn(`[Voice:Heartbeat] #${voiceChannel.name} status=${status} (stuck ${stuckSeconds}s, tick ${stuckTicks})`);
 
-    /* Soft rejoin at 10s stuck — re-sends voice state without tearing down. */
+    /* Soft rejoin at tick 2 (~16s) — re-sends voice state, doesn't tear down. */
     if (stuckTicks === 2) {
       try {
         console.warn(`[Voice:Heartbeat] Attempting soft rejoin in #${voiceChannel.name}...`);
@@ -388,13 +421,13 @@ export async function joinChannel(guild, voiceChannel, { passive = false } = {})
       }
     }
 
-    /* Hard destroy at 20s stuck (was 60s) — Destroyed handler triggers
-       immediate-recovery fresh-join with a new session. */
-    if (stuckSeconds >= 20 || stuckTicks >= 4) {
+    /* Hard destroy at ~32s stuck — Destroyed handler triggers immediate
+       fresh-join recovery with a new session. */
+    if (stuckSeconds >= 32 || stuckTicks >= 4) {
       console.warn(`[Voice:Heartbeat] Forcing destroy — connection stuck ${stuckSeconds}s in ${status}.`);
       try { connection.destroy(); } catch {}
     }
-  }, 5_000);
+  }, 8_000);
 
   connection.on(VoiceConnectionStatus.Destroyed, () => {
     clearInterval(heartbeat);
