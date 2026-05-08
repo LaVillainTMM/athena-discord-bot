@@ -1204,6 +1204,14 @@ client.on(Events.MessageCreate, async message => {
 
   const trimmed = message.content.trim();
 
+  /* Observability: log every incoming non-bot message so silent drops are visible. */
+  try {
+    const where = message.channel?.type === ChannelType.DM
+      ? `DM`
+      : `#${message.channel?.name || "?"}@${message.guild?.name || "?"}`;
+    console.log(`[Msg] ${message.author.username} in ${where}: "${(trimmed || "<empty>").slice(0, 120)}"`);
+  } catch {}
+
   /* store every message for awareness — non-blocking */
   storeDiscordMessage(message).catch(() => {});
 
