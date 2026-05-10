@@ -1979,7 +1979,79 @@ client.on(Events.MessageCreate, async message => {
     /* pass the channel and guild for context (null in DMs) */
     const channel = isDM ? null : message.channel;
     const guild = isDM ? null : message.guild;
-    let reply = await getAthenaResponse(message.content, athenaUserId, message.author.id, channel, guild);
+
+    /* ── Discord reply-context resolution ──
+       If the user used Discord's "Reply" feature, fetch the message they're
+       replying to so Athena knows what "this question" / "that answer" refers
+       to. Without this she hallucinates context (e.g. defaulting to the DBI
+       quiz when asked to "resend the answer to this question as audio"). */
+    let referencedMessage = null;
+    let referencedFromAthena = false;
+    if (message.reference?.messageId) {
+      try {
+        referencedMessage = await message.channel.messages.fetch(message.reference.messageId);
+        referencedFromAthena = referencedMessage.author?.id === client.user?.id;
+        console.log(
+          `[ReplyCtx] User replied to ${referencedFromAthena ? "Athena's" : referencedMessage.author?.username + "'s"} ` +
+          `message: "${(referencedMessage.content || "").slice(0, 80)}..."`
+        );
+      } catch (refErr) {
+        console.warn(`[ReplyCtx] Could not fetch referenced message: ${refErr.message}`);
+      }
+    }
+
+    /* ── Audio re-send shortcut ──
+       If the user replied to one of Athena's own messages and is asking for
+       it as audio ("resend as audio", "read this aloud", etc.), skip Gemini
+       entirely and TTS the EXACT referenced text. This was previously asking
+       Gemini to "answer the question" with no context, producing hallucinated
+       replies about totally unrelated topics. */
+    if (referencedFromAthena && isAudioRequest(message.content) && referencedMessage.content?.trim()) {
+      console.log("[ReplyCtx] Audio re-send shortcut — TTS-ing referenced Athena message directly.");
+      const sourceText = referencedMessage.content.trim();
+      const audioParts = splitResponseForAudio(sourceText, 5000);
+      let audioSent = false;
+      let lastAudioError = null;
+      for (let i = 0; i < audioParts.length; i++) {
+        const target = i === 0 ? message : message.channel;
+        const label = audioParts.length > 1
+          ? `athena_audio_resend_${i + 1}_of_${audioParts.length}`
+          : "athena_audio_resend";
+        if (i > 0) await new Promise(r => setTimeout(r, 3000));
+        try {
+          const result = await sendAudioMessage(target, audioParts[i], label);
+          if (result.ok) audioSent = true;
+          else if (i === 0) { lastAudioError = result.error; break; }
+        } catch (err) {
+          if (i === 0) { lastAudioError = err.message; break; }
+        }
+      }
+      if (!audioSent) {
+        await message.reply(`I couldn't generate the audio (${lastAudioError || "unknown error"}). Here's the text again:\n\n${sourceText.slice(0, 1900)}`);
+      }
+      return;
+    }
+
+    /* Build reply-context block for Gemini when there's a reference but it's
+       not a simple audio re-send. */
+    let replyContextBlock = "";
+    if (referencedMessage) {
+      const author = referencedFromAthena
+        ? "you (Athena, in an earlier reply)"
+        : `${referencedMessage.author?.username || "another user"}`;
+      const refContent = (referencedMessage.content || "[no text — possibly an attachment]").slice(0, 4000);
+      replyContextBlock =
+        `[USER IS REPLYING TO AN EARLIER MESSAGE]\n` +
+        `Author of the earlier message: ${author}\n` +
+        `Earlier message text:\n"""${refContent}"""\n` +
+        `Treat the user's current message as a follow-up about this earlier one. ` +
+        `If they say "this question" / "that answer" / "resend it" / etc., they mean the earlier message above. ` +
+        `Do NOT change topic or invent unrelated context.\n` +
+        `[END USER IS REPLYING]\n\n`;
+    }
+
+    const promptForGemini = replyContextBlock + message.content;
+    let reply = await getAthenaResponse(promptForGemini, athenaUserId, message.author.id, channel, guild);
 
     /* Guard: Gemini can return an empty string when search grounding consumes the full
        context without generating visible text. Fall back to a safe default. */
