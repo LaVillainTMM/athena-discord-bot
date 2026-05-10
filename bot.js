@@ -1239,6 +1239,41 @@ async function handleVoiceTranscript({ user, userId, guild, channel, transcript 
 }
 
 /* ---------------- MESSAGE HANDLER ---------------- */
+/* ──────────────────────────────────────────────────────
+   MULTI-INSTANCE DEDUP LOCK
+   When Railway runs >1 replica, every container receives the same Discord
+   gateway event and would respond. Without this lock, a single user message
+   produces N replies (verified in deployment logs: 3 instances each ran
+   getAthenaResponse on the same DM). We acquire an atomic Firestore lock
+   keyed by message.id — only the first writer (across all containers) wins
+   and proceeds; the others silently abort.
+
+   `.create()` on firebase-admin's DocumentReference fails with ALREADY_EXISTS
+   if the document is present, giving us atomic first-writer-wins semantics
+   without a transaction. Locks auto-expire via a 1-hour TTL field that a
+   future cleanup worker (or Firestore TTL policy) can purge.
+────────────────────────────────────────────────────── */
+const PROCESS_INSTANCE_ID = `${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+async function tryAcquireMessageLock(messageId) {
+  try {
+    const lockRef = firestore.doc(`athena_ai/locks/messages/${messageId}`);
+    await lockRef.create({
+      instance: PROCESS_INSTANCE_ID,
+      acquiredAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    return true;
+  } catch (err) {
+    if (err.code === 6 || /already exists/i.test(err.message || "")) {
+      return false;
+    }
+    /* Unknown error — fail open so a Firestore outage doesn't silence the bot.
+       At worst we get duplicate replies for the duration of the outage. */
+    console.warn(`[MessageLock] Lock check error (failing open): ${err.message}`);
+    return true;
+  }
+}
+
 client.on(Events.MessageCreate, async message => {
   if (message.author.bot) return;
 
@@ -1249,8 +1284,16 @@ client.on(Events.MessageCreate, async message => {
     const where = message.channel?.type === ChannelType.DM
       ? `DM`
       : `#${message.channel?.name || "?"}@${message.guild?.name || "?"}`;
-    console.log(`[Msg] ${message.author.username} in ${where}: "${(trimmed || "<empty>").slice(0, 120)}"`);
+    console.log(`[Msg:${PROCESS_INSTANCE_ID}] ${message.author.username} in ${where}: "${(trimmed || "<empty>").slice(0, 120)}"`);
   } catch {}
+
+  /* Acquire the cross-instance lock before doing any work that produces a
+     reply. If we lose the race to another container, abort silently. */
+  const won = await tryAcquireMessageLock(message.id);
+  if (!won) {
+    console.log(`[MessageLock] Skipping ${message.id} — another instance already claimed it.`);
+    return;
+  }
 
   /* store every message for awareness — non-blocking */
   storeDiscordMessage(message).catch(() => {});
