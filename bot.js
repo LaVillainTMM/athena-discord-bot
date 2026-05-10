@@ -37,6 +37,8 @@ import { sendAudioMessage, isAudioRequest, splitResponseForAudio } from "./audio
 import { syncLatestDojPressReleases, searchAndStoreDoj, getDojKnowledgeSummary } from "./lib/dojKnowledge.js";
 import { storeMemberVisualProfile, identifyMembersInImage } from "./visualIdentity.js";
 import { isWeatherQuery, extractLocation, fetchWeather, formatWeatherContext } from "./lib/weather.js";
+import { getUserLocation, setUserLocation, geocodeLocation, formatLocationContext } from "./lib/userLocation.js";
+import { nearbyPlaces, formatPlacesBlock, detectNearbyRequest } from "./lib/places.js";
 import {
   listRoster, upsertArtist, removeArtist,
   snapshotArtist, snapshotAllArtists,
@@ -910,6 +912,44 @@ async function getAthenaResponse(content, athenaUserId, discordUserId, channel, 
     }
   }
 
+  /* ── Resolve user's current location + tag time ──
+     Athena openly attaches the timestamp + location to every reply so she
+     can naturally say things like "it's 3pm where you are in Austin." */
+  let locationBlock = "";
+  let userLoc = null;
+  try {
+    userLoc = await getUserLocation(athenaUserId);
+  } catch (err) {
+    console.warn(`[UserLocation] lookup failed: ${err.message}`);
+  }
+  locationBlock = formatLocationContext({
+    location: userLoc,
+    sentAtMs: Date.now(),
+    username: null, /* Gemini already has it from history; keep the block compact */
+  });
+
+  /* ── Natural-language NEARBY hook ──
+     "what's near me", "any coffee around me", "find a gas station nearby" → run
+     a places search around the user's location and inject the results so
+     Athena can recommend them with maps links. */
+  let nearbyBlock = "";
+  const nearbyReq = detectNearbyRequest(content);
+  if (nearbyReq && userLoc) {
+    try {
+      console.log(`[Nearby] "${nearbyReq.query || "general"}" near ${userLoc.label}`);
+      const { provider, places } = await nearbyPlaces({
+        lat: userLoc.lat, lon: userLoc.lon,
+        query: nearbyReq.query, radiusMeters: 2500, limit: 8,
+      });
+      nearbyBlock = formatPlacesBlock({ provider, places, query: nearbyReq.query, originLabel: userLoc.label });
+    } catch (err) {
+      console.warn(`[Nearby] lookup failed: ${err.message}`);
+      nearbyBlock = `[NEARBY PLACES]\nLookup failed: ${err.message}. Tell the user honestly.\n[END NEARBY PLACES]\n\n`;
+    }
+  } else if (nearbyReq && !userLoc) {
+    nearbyBlock = `[NEARBY PLACES]\nUser asked about nearby things but has no location on file. Ask them to run \`!setlocation <city or address>\` first.\n[END NEARBY PLACES]\n\n`;
+  }
+
   /* ── Natural-language place-finder hook ──────────────────────────────────
      If the user said something like "I just moved to Austin" or "find me
      places in Brooklyn", run the place finder and inject results as context
@@ -957,7 +997,7 @@ async function getAthenaResponse(content, athenaUserId, discordUserId, channel, 
     console.warn(`[MusicAnalytics] Roster digest skipped: ${err.message}`);
   }
 
-  const fullMessage = liveContext + knowledgeBlock + weatherBlock + placesBlock + labelBlock + voiceAwareness + serverContext + content;
+  const fullMessage = liveContext + locationBlock + knowledgeBlock + weatherBlock + nearbyBlock + placesBlock + labelBlock + voiceAwareness + serverContext + content;
 
   let reply;
   try {
@@ -1755,6 +1795,80 @@ client.on(Events.MessageCreate, async message => {
 
   const isDM = message.channel.type === ChannelType.DM;
   const mentionsAthena = message.content.toLowerCase().includes("athena");
+
+  /* ── !setlocation / !whereami / !nearby — location commands (everyone) ── */
+  if (trimmed.toLowerCase().startsWith("!setlocation")) {
+    const text = trimmed.slice("!setlocation".length).trim();
+    if (!text) {
+      await message.reply("Usage: `!setlocation <city or address>` — e.g. `!setlocation Brooklyn, NY`");
+      return;
+    }
+    try {
+      const athenaUserId = await getOrCreateAthenaUser(message.author);
+      const geo = await geocodeLocation(text);
+      await setUserLocation(athenaUserId, geo);
+      await message.reply(
+        `Location saved: **${geo.label}** (${geo.lat.toFixed(4)}, ${geo.lon.toFixed(4)}).\n` +
+        `https://www.google.com/maps/search/?api=1&query=${geo.lat},${geo.lon}\n` +
+        `I'll tag your messages with this location until you change it. Try \`!nearby coffee\`.`
+      );
+    } catch (err) {
+      await message.reply(`Couldn't set that location: ${err.message}`);
+    }
+    return;
+  }
+
+  if (trimmed.toLowerCase() === "!whereami" || trimmed.toLowerCase() === "!mylocation") {
+    try {
+      const athenaUserId = await getOrCreateAthenaUser(message.author);
+      const loc = await getUserLocation(athenaUserId);
+      if (!loc) {
+        await message.reply("I don't have a location on file for you. Set one with `!setlocation <city or address>`.");
+        return;
+      }
+      const ageMin = Math.round((Date.now() - loc.updatedAt) / 60000);
+      const ageStr = ageMin >= 60 ? `${Math.round(ageMin / 60)}h` : `${ageMin}m`;
+      await message.reply(
+        `Your location on file: **${loc.label}** (${loc.lat.toFixed(4)}, ${loc.lon.toFixed(4)})\n` +
+        `Source: ${loc.source === "mobile" ? "live mobile GPS" : "saved value"} · updated ${ageStr} ago\n` +
+        `https://www.google.com/maps/search/?api=1&query=${loc.lat},${loc.lon}`
+      );
+    } catch (err) {
+      await message.reply(`Lookup failed: ${err.message}`);
+    }
+    return;
+  }
+
+  if (trimmed.toLowerCase().startsWith("!nearby")) {
+    const query = trimmed.slice("!nearby".length).trim();
+    try {
+      const athenaUserId = await getOrCreateAthenaUser(message.author);
+      const loc = await getUserLocation(athenaUserId);
+      if (!loc) {
+        await message.reply("Set your location first with `!setlocation <city or address>`, then try again.");
+        return;
+      }
+      await message.channel.sendTyping().catch(() => {});
+      const { provider, places } = await nearbyPlaces({
+        lat: loc.lat, lon: loc.lon, query, radiusMeters: 2500, limit: 8,
+      });
+      if (!places.length) {
+        await message.reply(`No "${query || "places"}" found within 2.5km of ${loc.label}. Try a different keyword or wider scope.`);
+        return;
+      }
+      const lines = places.map((p, i) => {
+        const dist = p.distance_m < 1000 ? `${p.distance_m}m` : `${(p.distance_m / 1000).toFixed(1)}km`;
+        const ratingPart = p.rating ? ` · ${p.rating}` : "";
+        return `${i + 1}. **${p.name}** (${p.type}, ${dist}${ratingPart})\n   ${p.mapsUrl}`;
+      }).join("\n");
+      const reply = `**${query || "Places"} near ${loc.label}** (via ${provider === "google" ? "Google Places" : "OpenStreetMap"}):\n\n${lines}`;
+      const chunks = reply.match(/[\s\S]{1,1990}/g) || [reply];
+      for (const c of chunks) await message.reply(c);
+    } catch (err) {
+      await message.reply(`Nearby lookup failed: ${err.message}`);
+    }
+    return;
+  }
 
   /* ── Quiz answer guard ─────────────────────────────────────────────────────
      When a user is mid-quiz the quizRunner's awaitMessages() collector owns
