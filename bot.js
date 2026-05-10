@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { Client, GatewayIntentBits, Events, Partials, ChannelType } from "discord.js";
+import { Client, GatewayIntentBits, Events, Partials, ChannelType, AttachmentBuilder } from "discord.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { admin, firestore } from "./firebase.js";
 import {
@@ -2241,10 +2241,24 @@ client.on(Events.MessageCreate, async message => {
         for (const chunk of chunks) await message.reply(chunk);
       }
     } else {
-      /* ── Text request: send text only ── */
+      /* ── Text request: send text only ──
+         Discord's hard per-message limit is 2000 characters. When a reply is longer
+         we used to chunk it into N separate messages, which the user reported as
+         "sent in multiple messages instead of one giant message." We now send the
+         full reply as a single .txt attachment (with a short inline preview) so it
+         arrives as a single Discord message that contains the entire answer. */
       if (reply.length > 2000) {
-        const chunks = reply.match(/[\s\S]{1,1990}/g) || [reply];
-        for (const chunk of chunks) await message.reply(chunk);
+        const previewLen = 1500;
+        const preview = reply.slice(0, previewLen).trim();
+        const buffer = Buffer.from(reply, "utf8");
+        const attachment = new AttachmentBuilder(buffer, {
+          name: `athena_answer_${Date.now()}.txt`,
+          description: "Full Athena response (too long to fit in one Discord message)",
+        });
+        await message.reply({
+          content: `${preview}…\n\n_Full answer attached — Discord caps a single message at 2000 characters and this reply is ${reply.length}. Tap the file to read the rest._`,
+          files: [attachment],
+        });
       } else {
         await message.reply(reply);
       }
