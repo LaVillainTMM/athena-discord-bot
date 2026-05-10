@@ -1993,9 +1993,13 @@ client.on(Events.MessageCreate, async message => {
        Priority: named channel by message text → user's current channel → none */
     {
       const lower = message.content.toLowerCase();
+      /* Both patterns now REQUIRE explicit voice context (voice|vc|call|channel|chat|talk)
+         within ~35 chars. Without this guard, phrases like "athena, join me in figuring
+         this out" were triggering the join flow → join would fail → user would receive
+         BOTH a "couldn't join" reply AND the normal AI reply (a duplicate response). */
       const wantsVoiceJoin =
         /\b(join|come to|hop in|get in|enter|jump in)\b.{0,35}\b(voice|vc|call|channel|chat|talk)\b/i.test(message.content) ||
-        /\bjoin (me|us)\b/i.test(message.content);
+        /\bjoin\s+(me|us)\b.{0,35}\b(voice|vc|call|channel|chat|talk)\b/i.test(message.content);
 
       if (wantsVoiceJoin) {
         /* Resolve the guild — from a server message or from primary guild (DMs) */
@@ -2050,7 +2054,9 @@ client.on(Events.MessageCreate, async message => {
             } catch (joinErr) {
               console.error("[VoiceJoin] Join failed:", joinErr.message);
               await message.reply(`I couldn't join that channel: ${joinErr.message}`).catch(() => {});
-              /* fall through to normal reply */
+              /* Return so we don't ALSO send the normal AI text reply — that was producing
+                 a double response whenever a voice-join attempt failed. */
+              return;
             }
           } else if (isDM) {
             await message.reply(
