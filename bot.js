@@ -2527,6 +2527,23 @@ client.once(Events.ClientReady, async () => {
     console.error("[DeepResearch] worker boot failed:", err.message);
   }
 
+  /* ── Knowledge gap analyzer ───────────────────────────────────────────
+     Every 30 min Athena samples 200 random verified entries from
+     athena_knowledge, asks Gemini to cluster them and identify gaps
+     (theoretical-vs-practical, abstract-vs-stepwise, global-vs-local-
+     materials, expert-vs-beginner, historical-vs-current, single-source).
+     Each gap produces ONE concrete research topic that gets pushed into
+     research_queue with subjectType="practical" so the deep-research
+     worker turns it into a step-by-step dossier with materials, day-by-day
+     timeline, and safety/verification — closing the gap automatically.
+     Reports archived in knowledge_gap_reports for audit. */
+  try {
+    const { startGapAnalyzer } = await import("./lib/knowledgeGapAnalyzer.js");
+    startGapAnalyzer();
+  } catch (err) {
+    console.error("[GapAnalyzer] boot failed:", err.message);
+  }
+
   /* 0. Firestore startup self-test — full write/read/delete probe per critical
         collection. Each probe writes a sentinel doc with id "__startup_probe__",
         reads it back, and deletes it. The sentinel docId is filterable so it
