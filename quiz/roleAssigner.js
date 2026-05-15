@@ -17,7 +17,7 @@ You assess members across these behavioral lenses — NOT by tallying nation tag
 • Reactions — instincts under conflict, crisis, and betrayal
 • Purpose — what fundamentally drives them
 
-Read all 50 answers as a unified portrait of who this person is. Respond with ONLY one word — the nation name. No explanation. No punctuation. Just one of: SleeperZ, ESpireZ, BoroZ, PsycZ`;
+Read all the answers as a unified portrait of who this person is. Respond with ONLY one word — the nation name. No explanation. No punctuation. Just one of: SleeperZ, ESpireZ, BoroZ, PsycZ`;
 
 function fallbackSort(qaPairs) {
   const counts = { SleeperZ: 0, ESpireZ: 0, BoroZ: 0, PsycZ: 0 };
@@ -48,7 +48,7 @@ export default async function assignRole(qaPairs) {
           role: "user",
           parts: [
             {
-              text: `${NATION_SORT_PROMPT}\n\nHere are the member's 50 answers:\n\n${answersText}`,
+              text: `${NATION_SORT_PROMPT}\n\nHere are the member's answers:\n\n${answersText}`,
             },
           ],
         },
