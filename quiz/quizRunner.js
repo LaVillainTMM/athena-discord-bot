@@ -9,7 +9,7 @@ export function isInActiveQuiz(userId) {
   return activeSessions.has(userId);
 }
 
-/* ── Run the full 50-question quiz via Discord DMs ──
+/* ── Run the full 59-question quiz via Discord DMs ──
    Returns: { answers, assignedNation }
    Throws on timeout or DM failure. ── */
 export default async function runQuiz(user) {
