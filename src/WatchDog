@@ -1,0 +1,12 @@
+async def run_with_lease(start_bot, stop_bot):
+    while True:
+        await acquire_lease()
+        bot_task = asyncio.create_task(start_bot())
+        try:
+            while await _renew(_client()):
+                await asyncio.sleep(RENEW)
+        finally:
+            # lost it, or we're shutting down — stand down cleanly
+            await stop_bot()
+            bot_task.cancel()
+        await asyncio.sleep(2)
