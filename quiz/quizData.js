@@ -1,7 +1,7 @@
 // NationZ Quiz — Full Question Pool (401 questions)
 // Session randomly samples QUIZ_SESSION_SIZE questions each time
 
-export const QUIZ_SESSION_SIZE = 50;
+export const QUIZ_SESSION_SIZE = 59;
 
 export const quizQuestions = [
   {
@@ -522,6 +522,96 @@ export const quizQuestions = [
         "text": "Thrive in it",
         "nation": "PsycZ"
       }
+    ]
+  },
+  {
+    "id": 402,
+    "question": "Which is your favorite season?",
+    "options": [
+      { "label": "A", "text": "Spring",  "nation": "SleeperZ" },
+      { "label": "B", "text": "Summer",  "nation": "ESpireZ"  },
+      { "label": "C", "text": "Autumn",  "nation": "BoroZ"    },
+      { "label": "D", "text": "Winter",  "nation": "PsycZ"    }
+    ]
+  },
+  {
+    "id": 403,
+    "question": "You're free on the weekend. What would you prefer to do?",
+    "options": [
+      { "label": "A", "text": "Play games alone", "nation": "SleeperZ" },
+      { "label": "B", "text": "Party",            "nation": "ESpireZ"  },
+      { "label": "C", "text": "Cooking",          "nation": "BoroZ"    },
+      { "label": "D", "text": "Read books",       "nation": "PsycZ"    }
+    ]
+  },
+  {
+    "id": 404,
+    "question": "What is your favorite hobby?",
+    "options": [
+      { "label": "A", "text": "Playing Video Games",   "nation": "SleeperZ" },
+      { "label": "B", "text": "Learning Something New","nation": "ESpireZ"  },
+      { "label": "C", "text": "Camping or Fishing",    "nation": "BoroZ"    },
+      { "label": "D", "text": "Competitive Sports",    "nation": "PsycZ"    }
+    ]
+  },
+  {
+    "id": 405,
+    "question": "What would you rather be?",
+    "options": [
+      { "label": "A", "text": "A Taker of Cause and Effect", "nation": "SleeperZ" },
+      { "label": "B", "text": "Part of the Winning Team",    "nation": "ESpireZ"  },
+      { "label": "C", "text": "A Motivator",                 "nation": "BoroZ"    },
+      { "label": "D", "text": "Leader of the Group",         "nation": "PsycZ"    }
+    ]
+  },
+  {
+    "id": 406,
+    "question": "What is your favorite time of the day?",
+    "options": [
+      { "label": "A", "text": "Night",     "nation": "SleeperZ" },
+      { "label": "B", "text": "Evening",   "nation": "ESpireZ"  },
+      { "label": "C", "text": "Afternoon", "nation": "BoroZ"    },
+      { "label": "D", "text": "Morning",   "nation": "PsycZ"    }
+    ]
+  },
+  {
+    "id": 407,
+    "question": "Hmm. You've shown promise thus far. I detect something... a sense of...?",
+    "options": [
+      { "label": "A", "text": "Daring",    "nation": "SleeperZ" },
+      { "label": "B", "text": "Curiosity", "nation": "ESpireZ"  },
+      { "label": "C", "text": "Loyalty",   "nation": "BoroZ"    },
+      { "label": "D", "text": "Ambition",  "nation": "PsycZ"    }
+    ]
+  },
+  {
+    "id": 408,
+    "question": "What House do you belong to?",
+    "options": [
+      { "label": "A", "text": "Stark",     "nation": "SleeperZ" },
+      { "label": "B", "text": "Greyjoy",   "nation": "ESpireZ"  },
+      { "label": "C", "text": "Tully",     "nation": "BoroZ"    },
+      { "label": "D", "text": "Lannister", "nation": "PsycZ"    }
+    ]
+  },
+  {
+    "id": 409,
+    "question": "For thy who casts spells, where lays your wand?",
+    "options": [
+      { "label": "A", "text": "Gryffindor", "nation": "SleeperZ" },
+      { "label": "B", "text": "Ravenclaw",  "nation": "ESpireZ"  },
+      { "label": "C", "text": "Hufflepuff", "nation": "BoroZ"    },
+      { "label": "D", "text": "Slytherin",  "nation": "PsycZ"    }
+    ]
+  },
+  {
+    "id": 410,
+    "question": "What year did \"Sparking Zero\" actually release?",
+    "options": [
+      { "label": "A", "text": "2005", "nation": "SleeperZ" },
+      { "label": "B", "text": "2009", "nation": "ESpireZ"  },
+      { "label": "C", "text": "2025", "nation": "BoroZ"    },
+      { "label": "D", "text": "2024", "nation": "PsycZ"    }
     ]
   },
   {
@@ -10432,7 +10522,7 @@ export const quizQuestions = [
   }
 ];
 
-export const MANDATORY_COUNT = 20;
+export const MANDATORY_COUNT = 29;
 export const RANDOM_COUNT = 30;
 
 export function selectRandomQuizQuestions(count = QUIZ_SESSION_SIZE) {

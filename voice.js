@@ -20,6 +20,42 @@ import { admin, firestore } from "./firebase.js";
 
 /* Map of guildId → { connection, player, channelId } */
 const voiceConnections = new Map();
+/* In-flight join tracker — guildId → Promise<state>. Prevents the
+   guardian from firing a second joinChannel while the first is still
+   handshaking (which creates parallel UDP attempts that knock each other
+   out and explains why we saw two back-to-back failures 10s apart). */
+const inFlightJoins = new Map();
+
+/* ── Active-listen callback ──
+   bot.js registers a function here at startup; voice.js calls it after every
+   successful transcription so Athena can decide whether to speak back. */
+let onTranscriptCallback = null;
+export function setTranscriptHandler(fn) {
+  onTranscriptCallback = typeof fn === "function" ? fn : null;
+}
+
+/* Channels Athena was kicked from (4014) — guardian honors this for 5min.
+   Map<channelId, expiresAtMs>. Exported for bot.js guardian. */
+export const recentEvictions = new Map();
+
+/* Listener registry — populated by startListeningInChannel(). Used by the
+   Destroyed-handler immediate recovery path so a freshly re-joined connection
+   gets its receiver re-subscribed (otherwise transcription dies silently). */
+const activeListeners = new Map(); /* channelId → { client, sessionId } */
+
+export function hasActiveListener(channelId) {
+  return activeListeners.has(channelId);
+}
+
+export function isChannelEvicted(channelId) {
+  const exp = recentEvictions.get(channelId);
+  if (!exp) return false;
+  if (Date.now() > exp) {
+    recentEvictions.delete(channelId);
+    return false;
+  }
+  return true;
+}
 
 /* ── Azure TTS config (mirrors audioMessage.js) ── */
 const AZURE_VOICE         = "en-GB-SoniaNeural";
@@ -97,21 +133,58 @@ async function gttsTtsStream(text) {
 
 /* ── Join a voice channel ── */
 /* passive = true → selfMute so Athena can listen without appearing as a speaker */
-export async function joinChannel(guild, voiceChannel, { passive = false } = {}) {
+export async function joinChannel(guild, voiceChannel, opts = {}) {
+  /* ── De-dupe concurrent joins for the same guild ──
+     If a join is already in flight (e.g. AutoJoin started one and the
+     guardian fires 10s later), return the SAME promise instead of starting
+     a parallel handshake. The previous behaviour was creating two parallel
+     UDP attempts that knocked each other out — visible in the log as two
+     back-to-back "First join attempt failed" lines ~10s apart. */
+  const inFlight = inFlightJoins.get(guild.id);
+  if (inFlight) {
+    console.log(`[Voice] Join already in flight for guild ${guild.id} — awaiting existing attempt instead of starting parallel handshake.`);
+    return inFlight;
+  }
+  const promise = _joinChannelImpl(guild, voiceChannel, opts).finally(() => {
+    inFlightJoins.delete(guild.id);
+  });
+  inFlightJoins.set(guild.id, promise);
+  return promise;
+}
+
+async function _joinChannelImpl(guild, voiceChannel, { passive = false } = {}) {
   const existing = voiceConnections.get(guild.id);
   if (existing) {
-    /* Already in this exact channel — nothing to do */
-    if (existing.channelId === voiceChannel.id) return existing;
-    /* If existing connection is passive and the new request is explicit, allow upgrade */
+    /* Already in this exact channel — return only if the connection is healthy.
+       If the underlying connection is in Disconnected/Destroyed/unknown state,
+       force a fresh join instead of handing back a dead connection. */
+    if (existing.channelId === voiceChannel.id) {
+      const status = existing.connection.state.status;
+      const healthy =
+        status === VoiceConnectionStatus.Ready ||
+        status === VoiceConnectionStatus.Signalling ||
+        status === VoiceConnectionStatus.Connecting;
+      if (healthy) return existing;
+      console.warn(`[Voice] Existing connection for #${voiceChannel.name} is ${status} — destroying and re-establishing.`);
+      intentionalLeaves.add(guild.id);
+      try { existing.connection.destroy(); } catch {}
+      voiceConnections.delete(guild.id);
+    } else
+    /* If existing connection is passive and the new request is explicit, allow upgrade.
+       Mark these destroys as intentional so the Destroyed handler does NOT
+       trigger immediate recovery (which would re-join the OLD channel and
+       race the new join). */
     if (existing.passive && !passive) {
+      intentionalLeaves.add(guild.id);
       existing.connection.destroy();
       voiceConnections.delete(guild.id);
     } else if (!existing.passive) {
       /* Explicit connection already exists — move to new channel */
+      intentionalLeaves.add(guild.id);
       existing.connection.destroy();
       voiceConnections.delete(guild.id);
-    } else {
-      /* Both passive — already in different channel, skip */
+    } else if (voiceConnections.has(guild.id)) {
+      /* Both passive, different channel — return existing rather than thrash. */
       return existing;
     }
   }
@@ -132,55 +205,115 @@ export async function joinChannel(guild, voiceChannel, { passive = false } = {})
     }
   }
 
-  const connection = joinVoiceChannel({
-    channelId: voiceChannel.id,
-    guildId:   guild.id,
-    adapterCreator: guild.voiceAdapterCreator,
-    selfDeaf: false,
-    selfMute: passive, /* muted when passively listening — unmuted when explicitly joined */
-  });
+  /* ── Join with retry — Railway → Discord-voice UDP handshakes can take
+        20-25s under load. Single 15s attempt was failing constantly with
+        false "permissions" errors. Now: 30s first attempt, then one fresh
+        retry at 25s if it stalls. Total worst-case 55s, but eliminates the
+        "Athena never joins the call" bug we were seeing in production. */
+  const attemptJoin = async (timeoutMs) => {
+    const conn = joinVoiceChannel({
+      channelId: voiceChannel.id,
+      guildId:   guild.id,
+      adapterCreator: guild.voiceAdapterCreator,
+      selfDeaf: false,
+      selfMute: false, /* always unmuted — Athena should appear active in every call she joins */
+    });
+    try {
+      await entersState(conn, VoiceConnectionStatus.Ready, timeoutMs);
+      return conn;
+    } catch (err) {
+      /* IMPORTANT: wrap destroy in try/catch — if the connection self-destroyed
+         (e.g. WebSocket close), calling destroy() again throws "Cannot destroy
+         VoiceConnection - it has already been destroyed", which then gets
+         re-thrown up to the guardian and triggers exponential backoff for
+         what is actually just a benign cleanup race. */
+      try { conn.destroy(); } catch {}
+      throw err;
+    }
+  };
 
+  let connection;
   try {
-    await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
-  } catch (err) {
-    connection.destroy();
-    throw new Error(
-      `Timed out connecting to **${voiceChannel.name}**. ` +
-      `Verify the bot has Connect + Speak permissions on that channel in server settings.`
-    );
+    console.log(`[Voice] Joining #${voiceChannel.name} (attempt 1, 30s timeout)...`);
+    connection = await attemptJoin(30_000);
+  } catch (firstErr) {
+    console.warn(`[Voice] First join attempt failed for #${voiceChannel.name}: ${firstErr.message} — retrying once with fresh handshake.`);
+    /* Brief pause before retry — gives Discord voice gateway a moment to
+       drop the stale session so the second handshake gets a clean slate. */
+    await new Promise(r => setTimeout(r, 1500));
+    try {
+      connection = await attemptJoin(25_000);
+    } catch (secondErr) {
+      throw new Error(
+        `Timed out connecting to **${voiceChannel.name}** after 2 attempts (~57s). ` +
+        `If permissions are correct, this is usually a Railway → Discord voice UDP issue — ` +
+        `the guardian will retry with backoff.`
+      );
+    }
   }
 
-  /* ── Reconnect on transient disconnects using proper rejoin() strategy ── */
+  /* ── Reconnect on transient disconnects using proper rejoin() strategy ──
+     If the voice gateway is the one disconnecting (closeCode 4014 = moved/kicked,
+     or transient ws drops), the standard pattern is to race Signalling vs Connecting:
+     either means the connection is auto-recovering. Otherwise destroy cleanly so
+     the guardian in bot.js can re-establish a fresh connection. */
   connection.on(VoiceConnectionStatus.Disconnected, async (_, newState) => {
     const reason    = newState.reason;
     const closeCode = newState.closeCode ?? "n/a";
     console.log(`[Voice] Disconnected from #${voiceChannel.name} — reason: ${reason}, closeCode: ${closeCode}`);
 
+    /* ── Close code 4014: forcibly removed (kicked / moved by a mod). ── */
     if (
       reason === VoiceConnectionDisconnectReason.WebSocketClose &&
       closeCode === 4014
     ) {
-      /* 4014 = forcibly removed from channel (kicked / moved).
-         Waiting for Connecting state is the correct recovery path here. */
-      try {
-        await entersState(connection, VoiceConnectionStatus.Connecting, 5_000);
-        console.log(`[Voice] Recovering from 4014 close in #${voiceChannel.name}...`);
-      } catch {
-        console.warn(`[Voice] 4014 recovery failed — destroying.`);
-        connection.destroy();
-      }
+      console.warn(`[Voice] 4014 close in #${voiceChannel.name} — honoring eviction for 5 min.`);
+      recentEvictions.set(voiceChannel.id, Date.now() + 5 * 60 * 1000);
+      try { connection.destroy(); } catch {}
       return;
     }
 
-    /* For all other disconnect reasons, attempt up to 5 rejoins with backoff */
-    if (connection.rejoinAttempts < 5) {
-      const delay = (connection.rejoinAttempts + 1) * 5_000;
-      console.log(`[Voice] Rejoin attempt ${connection.rejoinAttempts + 1}/5 in ${delay / 1000}s...`);
+    /* ── Close codes that REQUIRE a fresh handshake (rejoin can't fix these): ──
+        4006 — Session no longer valid (gateway nuked the session).
+        4009 — Session timeout.
+        4015 — Voice server crashed.
+        Skip the rejoin race and go straight to destroy → guardian fresh-join. */
+    if (
+      reason === VoiceConnectionDisconnectReason.WebSocketClose &&
+      (closeCode === 4006 || closeCode === 4009 || closeCode === 4015)
+    ) {
+      console.warn(`[Voice] Close ${closeCode} in #${voiceChannel.name} — session invalid, forcing fresh join.`);
+      try { connection.destroy(); } catch {}
+      return;
+    }
+
+    /* Race auto-recovery: if the voice manager moves to Signalling/Connecting
+       within 3s, recovery is in progress. Otherwise rejoin manually. */
+    try {
+      await Promise.race([
+        entersState(connection, VoiceConnectionStatus.Signalling, 3_000),
+        entersState(connection, VoiceConnectionStatus.Connecting, 3_000),
+      ]);
+      console.log(`[Voice] Auto-recovery in progress for #${voiceChannel.name}...`);
+      return;
+    } catch {
+      /* No auto-recovery — try a quick manual rejoin, then destroy fast. */
+    }
+
+    /* Fast-fail rejoin: 2 attempts at 2s and 4s. If both fail, destroy and let
+       the immediate-recovery handler + guardian re-establish a fresh session.
+       The old 5-attempt × 5s-each cascade meant up to 75s of dead air. */
+    if (connection.rejoinAttempts < 2) {
+      const delay = (connection.rejoinAttempts + 1) * 2_000;
+      console.log(`[Voice] Manual rejoin attempt ${connection.rejoinAttempts + 1}/2 in ${delay / 1000}s...`);
       await new Promise(r => setTimeout(r, delay));
-      connection.rejoin();
+      try { connection.rejoin(); } catch (err) {
+        console.warn(`[Voice] rejoin() threw: ${err.message} — destroying for guardian.`);
+        try { connection.destroy(); } catch {}
+      }
     } else {
-      console.warn(`[Voice] Exhausted 5 rejoin attempts for #${voiceChannel.name} — destroying.`);
-      connection.destroy();
+      console.warn(`[Voice] Exhausted 2 rejoin attempts for #${voiceChannel.name} — destroying for fresh join.`);
+      try { connection.destroy(); } catch {}
     }
   });
 
@@ -194,10 +327,52 @@ export async function joinChannel(guild, voiceChannel, { passive = false } = {})
     console.log(`[Voice] Connection ready in #${voiceChannel.name}`);
   });
 
-  /* ── Clean up the map when the connection is fully destroyed ── */
+  /* ── Clean up the map when the connection is fully destroyed ──
+     If destruction was unexpected (no intentional leave, channel still has
+     humans, not under eviction cooldown), trigger an immediate fresh-join
+     attempt rather than waiting up to 30s for the bot.js guardian. */
   connection.on(VoiceConnectionStatus.Destroyed, () => {
     voiceConnections.delete(guild.id);
     console.log(`[Voice] Connection destroyed for guild ${guild.id} (#${voiceChannel.name})`);
+
+    if (intentionalLeaves.has(guild.id)) {
+      intentionalLeaves.delete(guild.id);
+      return;
+    }
+    if (isChannelEvicted(voiceChannel.id)) return;
+
+    /* Fire-and-forget immediate recovery — guardian remains the safety net. */
+    setImmediate(async () => {
+      try {
+        const fresh = guild.channels.cache.get(voiceChannel.id);
+        if (!fresh) return;
+        const humans = [...fresh.members.values()].filter(m => !m.user.bot).length;
+        if (humans === 0) return;
+        if (voiceConnections.has(guild.id)) return; /* something already reconnected */
+        console.log(`[Voice] Immediate recovery: rejoining #${fresh.name} (${humans} humans present)`);
+        const freshState = await joinChannel(guild, fresh, { passive });
+
+        /* CRITICAL: a fresh connection has a fresh receiver. The previous
+           receiver.speaking listeners are gone with the destroyed connection,
+           so transcription would silently stop. Re-subscribe using the params
+           captured the first time startListeningInChannel was called for this
+           channel. */
+        const listenerCfg = activeListeners.get(voiceChannel.id);
+        if (listenerCfg) {
+          startListeningInChannel(
+            freshState.connection,
+            guild,
+            listenerCfg.client,
+            listenerCfg.sessionId
+          );
+          console.log(`[Voice] Immediate recovery: re-attached listener in #${fresh.name}`);
+        } else {
+          console.warn(`[Voice] Immediate recovery: no active listener config for #${fresh.name} — transcription will not resume until guardian re-joins.`);
+        }
+      } catch (err) {
+        console.warn(`[Voice] Immediate recovery failed for #${voiceChannel.name}: ${err.message} — guardian will retry.`);
+      }
+    });
   });
 
   const player = createAudioPlayer();
@@ -206,13 +381,127 @@ export async function joinChannel(guild, voiceChannel, { passive = false } = {})
   const state = { connection, player, channelId: voiceChannel.id, passive };
   voiceConnections.set(guild.id, state);
   console.log(`[Voice] Joined #${voiceChannel.name} in ${guild.name} (${passive ? "passive/silent" : "active"})`);
+
+  /* ── State-change logger — surfaces every transition in Railway logs so
+        silent drops are diagnosable. Keep it noisy on purpose. */
+  connection.on("stateChange", (oldState, newState) => {
+    if (oldState.status !== newState.status) {
+      console.log(`[Voice:State] #${voiceChannel.name}: ${oldState.status} → ${newState.status}`);
+    }
+  });
+
+  /* ── CRITICAL: auto re-attach the speaking listener whenever a fresh
+        connection is created for a channel that previously had one. This
+        fixes the "Athena stops responding after speaking once" bug —
+        speak() can trigger an internal destroy + re-create, and without
+        this re-attachment the new connection has no receiver subscription
+        so user audio never gets transcribed and she stays silent forever. */
+  const existingListenerCfg = activeListeners.get(voiceChannel.id);
+  if (existingListenerCfg) {
+    /* startListeningInChannel is idempotent via __athenaListenerAttached flag,
+       so calling it on a brand-new connection is safe and necessary. */
+    try {
+      startListeningInChannel(
+        connection,
+        guild,
+        existingListenerCfg.client,
+        existingListenerCfg.sessionId
+      );
+      console.log(`[Voice] Auto-re-attached listener to fresh connection in #${voiceChannel.name}`);
+    } catch (err) {
+      console.warn(`[Voice] Listener re-attach failed in #${voiceChannel.name}: ${err.message}`);
+    }
+  }
+
+  /* ── Heartbeat watchdog ──────────────────────────────
+     Sample every 8s. Soft rejoin at 16s (tick 2). Hard destroy at 32s.
+     The thresholds were softened from 5s/20s after we found the tighter
+     loop was firing on transient blips that would have self-recovered,
+     causing destroy→rejoin thrash. UDP-closed detection requires TWO
+     consecutive samples before destroying to avoid false positives. */
+  let lastReadyAt    = Date.now();
+  let stuckTicks     = 0;
+  let udpClosedTicks = 0;
+  const heartbeat = setInterval(async () => {
+    const status = connection.state.status;
+
+    if (status === VoiceConnectionStatus.Ready) {
+      /* Deep UDP-level health check — but require 2 consecutive samples
+         showing networking.state.code === 6 (Closed) before destroying.
+         A single sample can race library transitions and false-fire. */
+      const netCode = connection.state.networking?.state?.code;
+      if (netCode === 6) {
+        udpClosedTicks++;
+        console.warn(`[Voice:Heartbeat] #${voiceChannel.name} Ready but UDP=Closed (tick ${udpClosedTicks}/2)`);
+        if (udpClosedTicks >= 2) {
+          console.warn(`[Voice:Heartbeat] #${voiceChannel.name} UDP confirmed dead — destroying.`);
+          try { connection.destroy(); } catch {}
+          return;
+        }
+      } else {
+        udpClosedTicks = 0;
+      }
+      lastReadyAt = Date.now();
+      stuckTicks  = 0;
+      return;
+    }
+
+    /* Mid-recovery states get a generous grace period via entersState. */
+    if (
+      status === VoiceConnectionStatus.Signalling ||
+      status === VoiceConnectionStatus.Connecting
+    ) {
+      try {
+        await entersState(connection, VoiceConnectionStatus.Ready, 10_000);
+        lastReadyAt    = Date.now();
+        stuckTicks     = 0;
+        udpClosedTicks = 0;
+        return;
+      } catch { /* fall through into stuck handling */ }
+    }
+
+    stuckTicks++;
+    const stuckSeconds = Math.round((Date.now() - lastReadyAt) / 1000);
+    console.warn(`[Voice:Heartbeat] #${voiceChannel.name} status=${status} (stuck ${stuckSeconds}s, tick ${stuckTicks})`);
+
+    /* Soft rejoin at tick 2 (~16s) — re-sends voice state, doesn't tear down. */
+    if (stuckTicks === 2) {
+      try {
+        console.warn(`[Voice:Heartbeat] Attempting soft rejoin in #${voiceChannel.name}...`);
+        connection.rejoin();
+      } catch (err) {
+        console.warn(`[Voice:Heartbeat] rejoin() threw: ${err.message}`);
+      }
+    }
+
+    /* Hard destroy at ~32s stuck — Destroyed handler triggers immediate
+       fresh-join recovery with a new session. */
+    if (stuckSeconds >= 32 || stuckTicks >= 4) {
+      console.warn(`[Voice:Heartbeat] Forcing destroy — connection stuck ${stuckSeconds}s in ${status}.`);
+      try { connection.destroy(); } catch {}
+    }
+  }, 8_000);
+
+  connection.on(VoiceConnectionStatus.Destroyed, () => {
+    clearInterval(heartbeat);
+  });
+
   return state;
 }
+
+/* Tracks guilds where leave was deliberately invoked, so the Destroyed
+   handler doesn't trigger immediate-recovery for an intentional leave. */
+const intentionalLeaves = new Set();
 
 /* ── Leave the voice channel in a guild ── */
 export function leaveChannel(guildId) {
   const state = voiceConnections.get(guildId);
   if (!state) return false;
+  intentionalLeaves.add(guildId);
+  /* Clear listener registry for this channel so it doesn't accumulate stale
+     entries across the bot's lifetime. Auto-recovery won't fire here because
+     the leave is marked intentional. */
+  if (state.channelId) activeListeners.delete(state.channelId);
   state.connection.destroy();
   /* voiceConnections map is cleaned up by the Destroyed listener */
   console.log(`[Voice] Left voice channel in guild ${guildId}`);
@@ -396,9 +685,9 @@ async function storeVoiceLog(userId, user, guild, { durationMs, transcript, samp
       { merge: true }
     );
 
-    console.log(`[VoiceListen] Stored voice log for ${user.username}: "${transcript || "no transcript"}" (${durationMs}ms)`);
+    console.log(`[Firestore:voice_fingerprints] Stored audio_log for ${user.username} — "${transcript || "no transcript"}" (${durationMs}ms)`);
   } catch (err) {
-    console.error("[VoiceListen] storeVoiceLog error:", err.message);
+    console.error("[Firestore:voice_fingerprints] storeVoiceLog FAILED:", err.message);
   }
 }
 
@@ -439,6 +728,21 @@ async function processVoiceSample(userId, user, guild, opusChunks, durationMs, s
       sampleSizeBytes: pcmBuffer.length,
       sessionId: sessionId || null,
     });
+
+    /* Active-listen — hand the transcript to bot.js so it can decide whether
+       Athena should speak back. Fire-and-forget; failures must not block the
+       voice loop. The callback receives everything it needs to reply in the
+       same channel and to know who spoke. */
+    if (onTranscriptCallback && transcript && transcript.trim()) {
+      const channelId = voiceConnections.get(guild.id)?.channelId;
+      const channel   = channelId ? guild.channels.cache.get(channelId) : null;
+      Promise.resolve()
+        .then(() => onTranscriptCallback({
+          user, userId, guild, channel, transcript: transcript.trim(),
+          sessionId: sessionId || null, durationMs,
+        }))
+        .catch(err => console.error("[VoiceListen] Active-listen handler error:", err.message));
+    }
   } catch (err) {
     console.error(`[VoiceListen] processVoiceSample error for ${user.username}:`, err.message);
   } finally {
@@ -453,8 +757,26 @@ async function processVoiceSample(userId, user, guild, opusChunks, durationMs, s
    voice logs + fingerprints in Firebase.
 ────────────────────────────────────────────────────── */
 export function startListeningInChannel(connection, guild, discordClient, sessionId = null) {
+  /* Idempotency: never attach the speaking listener twice to the same
+     connection — that would double-record audio and write duplicate
+     fingerprints. We tag the connection object with a hidden flag once
+     attached. */
+  if (connection.__athenaListenerAttached) {
+    console.log(`[VoiceListen] Listener already attached to this connection in ${guild.name} — skipping duplicate.`);
+    return;
+  }
+  connection.__athenaListenerAttached = true;
+
   const { receiver } = connection;
   console.log(`[VoiceListen] Listening for voices in ${guild.name}${sessionId ? ` (session ${sessionId})` : ""}`);
+
+  /* Register this listener config so immediate-recovery can re-attach it
+     if the connection is unexpectedly destroyed. Keyed by current channelId. */
+  const stateForGuild = voiceConnections.get(guild.id);
+  const channelId = stateForGuild?.channelId;
+  if (channelId) {
+    activeListeners.set(channelId, { client: discordClient, sessionId });
+  }
 
   receiver.speaking.on("start", async (userId) => {
     const key = `${guild.id}_${userId}`;

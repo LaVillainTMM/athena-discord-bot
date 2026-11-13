@@ -164,7 +164,20 @@ export async function sendAudioMessage(channel, text, label = "athena_voice") {
 export function isAudioRequest(content) {
   const lower = content.toLowerCase();
 
-  if (/\b(voice\s*message|voice\s*memo|send\s*(me\s*)?(an?\s*)?(audio|voice|mp3)|audio\s*(version|of|message|clip)|narrate|listen\s*to|as\s*audio|in\s*audio|recite|read\s*aloud|read\s*out\s*loud)\b/.test(lower)) return true;
+  /* Direct asks: "voice message", "send audio", "audio version", etc. */
+  if (/\b(voice\s*message|voice\s*memo|send\s*(me\s*)?(an?\s*)?(audio|voice|mp3)|audio\s*(version|of|message|clip|file)|narrate|listen\s*to|recite|read\s*aloud|read\s*out\s*loud)\b/.test(lower)) return true;
+
+  /* "as audio", "as an audio", "as an audio file", "in audio form", "as a voice message", etc.
+     The previous regex only matched literal "as audio" with optional whitespace, which silently
+     failed on the natural phrasing "send the answer as an audio file" because of the "an" between
+     "as" and "audio". Now we permit the optional article (a/an) and an optional trailing noun
+     (file/message/clip/recording/note). */
+  if (/\b(?:as|in)\s+(?:an?\s+)?(?:audio|voice|mp3|spoken|sound)(?:\s+(?:file|message|clip|recording|note|form|version|format))?\b/.test(lower)) return true;
+
+  /* Generic "send X as audio" — covers "send the answer to this question as an audio", which
+     was the exact wording the user tried that produced text instead of audio. */
+  if (/\bsend\b.{0,80}\b(?:as|in)\s+(?:an?\s+)?(?:audio|voice|mp3)\b/.test(lower)) return true;
+
   if (/\bread\s*(me|it|this)\b/.test(lower)) return true;
   if (/\bread\b.{0,60}\b(for|to)\s+me\b/.test(lower)) return true;
   if (/\bspeak\s*(it|this|out|to\s*me)\b/.test(lower)) return true;

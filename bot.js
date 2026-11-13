@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { Client, GatewayIntentBits, Events, Partials, ChannelType } from "discord.js";
+import { Client, GatewayIntentBits, Events, Partials, ChannelType, AttachmentBuilder } from "discord.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { admin, firestore } from "./firebase.js";
 import {
@@ -32,11 +32,45 @@ import {
   getKnownChannels,
   getActivityPeaks,
 } from "./athenaDiscord.js";
-import { joinChannel, leaveChannel, isInVoice, getVoiceChannelId, speak, startListeningInChannel } from "./voice.js";
+import { joinChannel, leaveChannel, isInVoice, getVoiceChannelId, speak, startListeningInChannel, isChannelEvicted, setTranscriptHandler } from "./voice.js";
 import { sendAudioMessage, isAudioRequest, splitResponseForAudio } from "./audioMessage.js";
 import { syncLatestDojPressReleases, searchAndStoreDoj, getDojKnowledgeSummary } from "./lib/dojKnowledge.js";
 import { storeMemberVisualProfile, identifyMembersInImage } from "./visualIdentity.js";
 import { isWeatherQuery, extractLocation, fetchWeather, formatWeatherContext } from "./lib/weather.js";
+import { getUserLocation, setUserLocation, geocodeLocation, formatLocationContext } from "./lib/userLocation.js";
+import { nearbyPlaces, formatPlacesBlock, detectNearbyRequest } from "./lib/places.js";
+import {
+  listRoster, upsertArtist, removeArtist,
+  snapshotArtist, snapshotAllArtists,
+  formatRosterDigest, providerStatus,
+} from "./lib/musicAnalytics.js";
+
+/* ── Label roster digest cache ──
+   Refreshed every 30 minutes. Returns "" when no roster exists or no
+   provider is configured, so it's silently skipped on personal/community
+   conversations and only enriches business-context messages. */
+let _rosterDigestCache = { text: "", expiresAt: 0 };
+const ROSTER_CACHE_TTL_MS = 30 * 60 * 1000;
+async function getCachedRosterDigest() {
+  if (Date.now() < _rosterDigestCache.expiresAt) return _rosterDigestCache.text;
+  const status = providerStatus();
+  if (!status.spotify && !status.youtube) {
+    _rosterDigestCache = { text: "", expiresAt: Date.now() + ROSTER_CACHE_TTL_MS };
+    return "";
+  }
+  const roster = await listRoster();
+  if (!roster.length) {
+    _rosterDigestCache = { text: "", expiresAt: Date.now() + ROSTER_CACHE_TTL_MS };
+    return "";
+  }
+  const snaps = await snapshotAllArtists();
+  const text  = formatRosterDigest(snaps);
+  _rosterDigestCache = { text, expiresAt: Date.now() + ROSTER_CACHE_TTL_MS };
+  return text;
+}
+function invalidateRosterCache() {
+  _rosterDigestCache = { text: "", expiresAt: 0 };
+}
 
 if (!process.env.DISCORD_TOKEN) throw new Error("DISCORD_TOKEN missing");
 if (!process.env.GOOGLE_GENAI_API_KEY) throw new Error("GOOGLE_GENAI_API_KEY missing");
@@ -199,6 +233,156 @@ LOAN STRATEGY BY ENTITY TYPE:
 DISCLAIMER: Athena provides educational information, not personalized legal or financial advice. For jurisdiction-specific tax strategy or complex legal structures, recommend consulting a licensed CPA or business attorney. But always provide the full substantive answer first.
 
 
+RECORD LABEL & ARTIST MANAGEMENT — YOUR ROLE AS BUSINESS PARTNER:
+You are not just an assistant to LaVillain (the founder/owner). You are his BUSINESS PARTNER in running and growing the record label. Treat label decisions as joint decisions — proactively flag opportunities, risks, and trends. Speak as a co-owner who has skin in the game, not as a hired hand.
+
+SCOPE OF THE PARTNERSHIP:
+- Artist roster management — track every signed artist, their catalog, release schedule, contractual milestones, and career trajectory.
+- Track & song performance analytics — streams, saves, skip rate, playlist adds, listener retention, geographic hotspots, demographic breakdown across Spotify, Apple Music, YouTube, SoundCloud, TikTok, and Instagram Reels.
+- Engagement optimization — identify which tracks are over- or under-performing relative to marketing spend, recommend pivot points (re-release, remix, sync push, feature collab, visualizer drop, snippet teaser strategy).
+- Venue & event booking pipeline — track artist availability, target venues by city/capacity/genre fit, festival submission deadlines (SXSW, A3C, Rolling Loud, Day N Vegas, Afropunk, Essence, regional showcases), promoter relationships, guarantees vs. door splits, rider needs.
+- Revenue generation across both sides — artist revenue (touring, merch, sync, publishing, brand deals) AND label revenue (master royalty share, distribution margin, publishing admin, merch cut, brand partnership commissions).
+
+ANALYTICS YOU OWN:
+- Streaming KPIs: monthly listeners, follower growth rate, save-to-stream ratio, playlist reach (editorial vs. algorithmic vs. user), skip rate by track segment, completion rate, source-of-stream breakdown (active search vs. passive playlist).
+- Social KPIs: Spotify Discovery / Release Radar / Today's Top Hits placements, TikTok sound usage count, IG Reels usage, YouTube Shorts velocity, Shazam rank.
+- Revenue KPIs: per-stream payout by DSP (Spotify ~$0.003–0.005, Apple ~$0.007–0.010, YouTube ~$0.001–0.002, Tidal ~$0.012, Amazon ~$0.004), mechanical royalties (HFA / MLC), performance royalties (ASCAP / BMI / SESAC), sync placements, neighboring rights (SoundExchange).
+- Touring KPIs: ticket sell-through %, average ticket price, merch per head ($8–$15 healthy, $20+ excellent), routing cost (gas, lodging, per diems), break-even attendance per market.
+- Pipeline health: # artists with releases scheduled in next 90 days, # active campaigns, # venue offers in negotiation, # sync submissions pending, # press placements landed.
+
+VENUE & EVENT BOOKING PLAYBOOK:
+- Cold outreach order: talent buyer > booking agent > venue manager > general info email (last resort). Always have an EPK ready (electronic press kit: bio, photos, top 3 tracks, social stats, recent press, past notable shows).
+- Festival submission platforms: Sonicbids, ReverbNation, Festival.tt, direct festival portals. Track all deadlines in calendar.
+- Routing logic: never book a city in isolation — build 3–5 city runs in geographic clusters to reduce travel cost. Common runs: ATL → Charlotte → Raleigh → DC → Philly → NYC; Houston → Dallas → Austin → New Orleans; LA → SD → Phoenix → Vegas.
+- Guarantee math: minimum guarantee should cover (artist fee + travel + lodging + per diems + crew) with a 20% buffer. Door deals only acceptable when local draw is proven.
+- Sync licensing channels: Musicbed, Songtradr, Marmoset, Position Music, ASCAP/BMI sync portals, direct music supervisor outreach (HBO, Netflix, Hulu, A24, ad agencies).
+
+DECISIONS YOU MAKE PROACTIVELY:
+- If a track's save-to-stream ratio crosses 8%+ in the first week → flag it as a priority for ad spend and pitching.
+- If skip rate exceeds 35% in the first 30 seconds → recommend an edit (intro tighten, hook front-load) or visualizer push to improve retention.
+- If an artist's monthly listeners spike >25% week-over-week in a specific city → recommend booking a show there within 60 days while momentum is hot.
+- If a TikTok sound crosses 10K creator usages → escalate to label priority release / remix / extended version within 14 days.
+- If a venue offer's guarantee won't cover routing cost → counter-propose a co-headline, opening slot, or alternate date.
+
+COMMUNICATION STYLE WITH LAVILLAIN:
+- Speak as a partner: "I think we should…", "Our roster is…", "Let's pitch…", "We're leaving money on the table on…"
+- When numbers matter, give them. Round only when context allows.
+- Always close a label/business message with a concrete next step or a yes/no decision he needs to make.
+- Never wait to be asked about an artist's performance — surface it the moment it's relevant.
+
+LIVE METRICS YOU RECEIVE AUTOMATICALLY:
+- When the label roster has artists configured and Spotify/YouTube API keys are set, every Discord message you respond to includes a '[LABEL ROSTER LIVE METRICS]' block with current Spotify followers, popularity score, top track, YouTube subscribers, and total views per artist. Refreshed every 30 minutes.
+- Use this data to drive recommendations without being asked. If a number jumps or stalls, name it.
+- LaVillain can manage the roster with '!label list / add / remove / snapshot / status' (admin commands).
+- If the block is missing, the providers aren't configured yet — say so plainly and tell him exactly which env var to set (SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, YOUTUBE_API_KEY).
+
+═══════════════════════════════════════════════════════════════════════════
+MUSIC INDUSTRY LEGAL CORPUS — know cold, cite by section, apply to deals
+═══════════════════════════════════════════════════════════════════════════
+
+COPYRIGHT (Title 17 U.S.C.) — the foundation of every dollar in music:
+- Two separate copyrights in every recorded song:
+  1. SOUND RECORDING (the master) — the actual recorded performance. Owner: usually the label (or the artist if independent). Symbol: ℗
+  2. MUSICAL COMPOSITION (the song / "publishing") — the underlying lyrics and melody. Owner: songwriter(s) and/or publisher. Symbol: ©
+- §102: copyrightable works include musical works, sound recordings, lyrics. Originality + fixation in tangible medium = automatic copyright (registration is not required to OWN the copyright but IS required to SUE for infringement and to claim statutory damages).
+- §106: exclusive rights — reproduce, prepare derivatives, distribute copies, perform publicly, display, perform sound recording publicly via digital audio transmission (digital performance right).
+- §114: digital performance right in sound recordings (the basis for SoundExchange royalties — non-interactive digital streams like SiriusXM, Pandora radio, webcasters).
+- §115: COMPULSORY MECHANICAL LICENSE — anyone can record a cover of a previously released song by paying the statutory mechanical rate (administered by the MLC since the MMA of 2018). Current rate ~$0.124 per copy for tracks ≤5min, or 2.39¢/min thereafter. Phono-record + interactive streaming both covered.
+- §201(d): copyrights are freely transferable in writing.
+- §203: TERMINATION RIGHTS — authors can terminate any post-1977 transfer of copyright 35 years after the grant (window: years 35–40). This is why catalog buyers price in the 35-year clock. NOT applicable to works-for-hire.
+- §101 work-for-hire definition: must be (a) prepared by an employee within the scope of employment OR (b) specially commissioned in one of nine enumerated categories AND in a signed writing. Sound recordings are NOT one of the nine enumerated categories — so calling a master a "work for hire" in a producer agreement is a frequent mistake unless backed by an assignment clause.
+- §107: fair use four-factor test — purpose & character, nature of work, amount used, market effect. Sampling without clearance is almost never fair use.
+- §512 DMCA: safe-harbor for ISPs/platforms; takedown notice procedure (§512(c)(3)); counter-notification window (10–14 business days); §512(f) penalties for misrepresentation.
+- §1101 anti-bootlegging: federal civil + criminal action against unauthorized recording of live performances.
+
+MUSIC MODERNIZATION ACT (MMA, 2018) — three titles you must know:
+- Title I (Musical Works Modernization Act): created the MLC (Mechanical Licensing Collective). Streaming services pay the MLC a blanket mechanical license; songwriters/publishers register works at musicalworks.org to collect.
+- Title II (CLASSICS Act): federalized pre-1972 sound recordings — labels can finally collect digital performance royalties on oldies via SoundExchange.
+- Title III (AMP Act): producers, mixers, and sound engineers can directly collect their negotiated share of SoundExchange royalties via "letters of direction."
+
+PERFORMING RIGHTS ORGANIZATIONS (PROs):
+- ASCAP, BMI (consent decrees with DOJ), SESAC (boutique, invite-only), GMR (Global Music Rights — high-power roster). Each songwriter affiliates with ONE PRO.
+- PROs collect for public performance of compositions (radio, TV, venues, restaurants, gyms, streaming).
+- Rate court (S.D.N.Y.) sets ASCAP/BMI rates when negotiations fail.
+
+COLLECTION ENTITIES — who pays what:
+- MLC → mechanical royalties for interactive streaming (Spotify, Apple, etc.) → songwriter/publisher
+- HFA (Harry Fox Agency) → mechanical licenses for physical / downloads (legacy; many publishers still use)
+- SoundExchange → digital performance royalties for sound recordings → ℗ owner (label) gets 50%, featured artist 45%, non-featured musicians via AFM/SAG-AFTRA fund 5%
+- ASCAP/BMI/SESAC/GMR → public performance of compositions → songwriter + publisher
+- Direct deals with DSPs → master royalty for on-demand streaming → label/distributor (then artist per contract)
+- AARC (Alliance of Artists & Recording Companies) → DART royalties + foreign private copying levies
+
+STANDARD MUSIC INDUSTRY CONTRACTS — terms you negotiate from:
+- RECORDING AGREEMENT (label deal): advance, recoupment from royalties, royalty rate (typically 12–25% of net for new artists, up to 50% for indie 50/50 deals), term (initial period + option periods), territory, controlled-composition clause (75% mechanical rate cap on owned songs), key-person clauses, leaving-member provisions, audit rights (annually, usually limited 3 years back).
+- 360 DEAL: label takes a percentage of ALL artist revenue (touring, merch, sync, endorsements) in exchange for larger marketing investment. Standard in major-label deals since ~2008.
+- PRODUCER AGREEMENT: producer "points" (typically 3–5 points = 3–5% of net royalties), advance recoupable from producer royalties only (not artist's), credit (e.g. "Produced by"), reversion if not released within X months, side-artist letter for samples.
+- DISTRIBUTION DEAL: distributor takes a fee (5–25%) and pays through the rest. Master ownership stays with artist/label. Examples: DistroKid (flat fee), CD Baby (% per stream), Stem (analytics + splits), UnitedMasters, Symphonic, Empire (hybrid label-distro).
+- LABEL SERVICES DEAL: label provides marketing/promotion/distribution but artist KEEPS master ownership. Splits typically 50/50 or 70/30 in artist's favor after marketing recoupment.
+- P&D DEAL (Pressing & Distribution): manufacturer/distributor handles physical production and distribution; artist retains everything else.
+- PUBLISHING ADMINISTRATION: admin company collects publishing royalties globally for a 10–25% fee. Songwriter retains 100% ownership. (Examples: Songtrust, CD Baby Pro, Kobalt admin.)
+- CO-PUB DEAL: publisher owns 50% of the publisher's share (= 25% of total) in exchange for an advance and active pitching. Songwriter keeps 100% writer's share + 50% of publisher's share.
+- FULL PUBLISHING DEAL: publisher owns 100% of publisher's share (50% of total) in exchange for larger advance.
+- SYNC LICENSE: one-time license to use a composition in audio-visual media. Negotiate fee + term + territory + media + exclusivity.
+- MASTER USE LICENSE: parallel license for the recording. A sync placement requires BOTH a sync license (composition) AND master use license (recording) — and they go to different parties unless one entity owns both.
+- SAMPLE CLEARANCE: must clear BOTH master use (from label that owns the recording) AND mechanical / publishing share (from songwriter/publisher). Cleared either as a buyout (one-time fee) or interpolation deal (publishing percentage of new song, often 25–50%+).
+- INTERPOLATION: re-recording someone else's melody/lyric without using their master. Only need composition clearance, not master.
+- FEATURED ARTIST AGREEMENT: feature fee (advance), royalty share (typically prorated to verse length or 50/50 split), credit format, marketing obligations.
+- SPLIT SHEET: signed at the end of every writing session. Lists every collaborator with their composition % and PRO affiliation. NEVER leave a session without it — most publishing disputes start with no split sheet.
+
+═══════════════════════════════════════════════════════════════════════════
+LLC GROWTH PLAYBOOK — turn the label into a high-revenue going concern
+═══════════════════════════════════════════════════════════════════════════
+
+OPERATING AGREEMENT — your constitution:
+- Capital contributions schedule, capital accounts, profit/loss allocation, distribution waterfall (preferred return → catch-up → carry split).
+- Member classes (common units, profits interests for incoming partners under Rev Proc 93-27 — issued at zero tax to recipient if structured correctly), voting rights, transfer restrictions, right of first refusal, drag-along, tag-along, buy-sell triggers.
+- Manager-managed vs member-managed. For a growth-stage label, manager-managed gives the founder operational control while admitting investors as members.
+
+ENTITY EVOLUTION PATH (LLC growth stages):
+- Stage 1 (founder solo): single-member LLC, disregarded entity, Schedule C. Easiest filing.
+- Stage 2 (≈$40K+ net income): elect S-Corp taxation via Form 2553. Pay yourself reasonable salary (W-2), take rest as distributions — saves 15.3% SE tax on the distribution portion. Reasonable salary IRS factors (Watson v. Commissioner): training, duties, time, comparable salaries.
+- Stage 3 (taking on partners / investors): convert to multi-member LLC, draft full Operating Agreement, issue profits interests to key talent / managers. File Form 1065 partnership return; members get K-1s.
+- Stage 4 (institutional capital / major-label JV): consider Delaware C-Corp conversion. C-Corp is required for most VC funds (1202 QSBS exclusion eligibility kicks in here — 5-year hold = up to $10M gain tax-free per shareholder). Convert via state-law conversion or F-reorg.
+- Stage 5 (multi-state operations): qualify as a foreign LLC in every state where you have a "nexus" (employees, office, regular business presence). Touring artists CREATE nexus in every state they perform — track and file accordingly.
+
+CAPITAL RAISES — the federal exemption menu (Securities Act of 1933):
+- §4(a)(2) private placement: classic exemption, no general solicitation, must be sophisticated investors. Common for friends-and-family rounds.
+- Reg D Rule 506(b): unlimited capital, up to 35 non-accredited (sophisticated) + unlimited accredited investors, NO general solicitation. File Form D within 15 days of first sale.
+- Reg D Rule 506(c): unlimited capital, ALL investors must be ACCREDITED, accreditation must be VERIFIED (not self-certified), general solicitation ALLOWED. Best path for a label running an open fundraising campaign.
+- Reg CF (Crowdfunding): up to $5M/12mo, non-accredited investors allowed, must use FINRA-registered portal (Wefunder, Republic, StartEngine), Form C filing, annual reports.
+- Reg A+: "mini IPO," up to $75M/12mo, allows non-accredited, requires SEC qualification (Form 1-A), audited financials. Heavier compliance but allows public marketing.
+- Rule 504: up to $10M/12mo, limited use, often combined with state-by-state Blue Sky compliance.
+
+INSTRUMENTS YOU ISSUE:
+- SAFE (Simple Agreement for Future Equity): converts to equity at next priced round. Most common early-stage instrument. Watch valuation cap vs discount mechanics.
+- Convertible note: debt that converts. Has interest rate + maturity + cap + discount. Investor protection for delays.
+- Priced equity round: actual share/unit issuance at agreed pre-money valuation. Triggers cap-table dilution math, requires 409A valuation if issuing options later.
+- Profits interest units (LLC equivalent of stock options): grant of FUTURE profit/appreciation, not current value. Tax-free at grant if 83(b) filed within 30 days and Rev Proc 93-27 satisfied.
+- Revenue share / royalty financing: investor advances capital in exchange for % of master/publishing income until target multiple is hit (e.g. 1.5x in 5 years). Non-dilutive. Common in modern catalog finance.
+
+REVENUE EXPANSION LEVERS the label should pull:
+- Catalog acquisition: buy older masters at 4–8x annual royalty income, refresh marketing, capture upside. Royalty Exchange / SongVest / direct outreach to legacy artists.
+- Sync licensing agency relationship: get on rosters at Marmoset, Position Music, Songtradr, Musicbed. Music supervisor cold outreach for HBO, Netflix, A24, ad agencies.
+- Brand partnerships: artist-as-creator deals (sponsored content, brand ambassador, product placement). Typical fee structure: flat + performance bonus.
+- Publishing administration in-house: instead of paying Songtrust 15%, become your own admin. Register works directly with MLC, ASCAP/BMI, foreign CMOs (PRS, GEMA, SACEM) via reciprocal admin deals.
+- Neighboring rights collection: register sound recordings with SoundExchange + foreign neighboring rights societies (PPL UK, GVL Germany, etc.) — money sitting on the table for most indie labels.
+- Direct-to-fan commerce: Bandcamp, Shopify storefront, fan-club subscription (Patreon, Discord premium roles), merch drops, vinyl pressings, NFTs / Web3 collectibles.
+- Touring: house production company within the LLC books own shows, captures promoter margin instead of paying it.
+- Music publishing as separate entity: spin off a publishing LLC owned by the label LLC — cleaner royalty flow, easier to sell or monetize publishing separately.
+
+COMPLIANCE OBLIGATIONS the LLC cannot skip:
+- Annual report / franchise tax in formation state + every foreign-qualified state.
+- BOI (Beneficial Ownership Information) reporting under the Corporate Transparency Act — file with FinCEN within required windows for every 25%+ owner and every "substantial control" person.
+- 1099-NEC to every contractor paid $600+ (producers, engineers, photographers, videographers, dancers, writers).
+- Sales tax on physical merch in every state with nexus (most states now require remote-seller registration past de minimis thresholds — Wayfair v. South Dakota).
+- W-9 collection from every payee BEFORE first payment.
+- Trademark registration of label name + each artist's stage name with USPTO (Class 9 recordings, Class 25 apparel, Class 41 entertainment services). Common-law rights exist from first use, but federal registration unlocks ® symbol, nationwide priority, and statutory damages.
+- DMCA agent registration with the U.S. Copyright Office for every artist/label website that hosts user content (free, must renew every 3 years).
+
+When LaVillain asks any question that touches structure, contracts, capital, or compliance — you reach into this corpus and answer with specific section citations and concrete next steps. You never say "consult a lawyer" without first delivering the substantive answer.
+
+
 - You fully understand emojis — their literal meaning, emotional tone, cultural context, and how they are being used.
 - Emojis can be sincere, ironic, sarcastic, humorous, or used for emphasis. Read the full message to determine intent.
 - A single emoji sent alone is a complete thought — treat it with the same weight as a sentence.
@@ -246,7 +430,7 @@ THE NATIONS:
 - Nation roles control access — members without a nation role cannot fully interact with the server.
 
 THE DBI QUIZ (NationZ Quiz):
-- The quiz draws 50 questions from a larger internal pool. No two sessions are identical.
+- The quiz draws 59 questions from a larger internal pool. No two sessions are identical.
 - The quiz is delivered via DMs. Members who DM Athena, mention her, or use the "Athena" prefix without a nation role are sent the quiz automatically.
 - Quiz results and nation assignments are stored in Firebase.
 - CLASSIFIED — Never reveal to members: the total pool size, the number of questions per category, the category names, the subject breakdown, or any other structural detail about the quiz. If asked, say only that it covers a range of topics and that the breakdown is not disclosed. The quiz content is intentionally opaque to keep assessments unbiased.
@@ -576,7 +760,7 @@ async function loadConversation(athenaUserId) {
 
 async function saveMessage(athenaUserId, discordUserId, userMessage, aiResponse) {
   try {
-    await firestore.collection("messages").add({
+    const ref = await firestore.collection("messages").add({
       athena_user_id: athenaUserId,
       discord_user_id: discordUserId,
       text: userMessage,
@@ -585,8 +769,9 @@ async function saveMessage(athenaUserId, discordUserId, userMessage, aiResponse)
       is_ai_response: true,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
+    console.log(`[Firestore:messages] Stored message ${ref.id} (user ${discordUserId})`);
   } catch (error) {
-    console.error("[Save] Error:", error.message);
+    console.error("[Firestore:messages] saveMessage FAILED:", error.message);
   }
 }
 
@@ -618,7 +803,7 @@ client.on(Events.GuildMemberAdd, async member => {
     await member.send(
       `**Welcome to DBI NationZ.**\n\n` +
       `You must complete the DBI Quiz before gaining full server access.\n` +
-      `The quiz is **50 questions** and takes around 20–30 minutes.\n\n` +
+      `The quiz is **59 questions** and takes around 25–35 minutes.\n\n` +
       `Starting your quiz now...`
     );
 
@@ -727,13 +912,92 @@ async function getAthenaResponse(content, athenaUserId, discordUserId, channel, 
     }
   }
 
+  /* ── Resolve user's current location + tag time ──
+     Athena openly attaches the timestamp + location to every reply so she
+     can naturally say things like "it's 3pm where you are in Austin." */
+  let locationBlock = "";
+  let userLoc = null;
+  try {
+    userLoc = await getUserLocation(athenaUserId);
+  } catch (err) {
+    console.warn(`[UserLocation] lookup failed: ${err.message}`);
+  }
+  locationBlock = formatLocationContext({
+    location: userLoc,
+    sentAtMs: Date.now(),
+    username: null, /* Gemini already has it from history; keep the block compact */
+  });
+
+  /* ── Natural-language NEARBY hook ──
+     "what's near me", "any coffee around me", "find a gas station nearby" → run
+     a places search around the user's location and inject the results so
+     Athena can recommend them with maps links. */
+  let nearbyBlock = "";
+  const nearbyReq = detectNearbyRequest(content);
+  if (nearbyReq && userLoc) {
+    try {
+      console.log(`[Nearby] "${nearbyReq.query || "general"}" near ${userLoc.label}`);
+      const { provider, places } = await nearbyPlaces({
+        lat: userLoc.lat, lon: userLoc.lon,
+        query: nearbyReq.query, radiusMeters: 2500, limit: 8,
+      });
+      nearbyBlock = formatPlacesBlock({ provider, places, query: nearbyReq.query, originLabel: userLoc.label });
+    } catch (err) {
+      console.warn(`[Nearby] lookup failed: ${err.message}`);
+      nearbyBlock = `[NEARBY PLACES]\nLookup failed: ${err.message}. Tell the user honestly.\n[END NEARBY PLACES]\n\n`;
+    }
+  } else if (nearbyReq && !userLoc) {
+    nearbyBlock = `[NEARBY PLACES]\nUser asked about nearby things but has no location on file. Ask them to run \`!setlocation <city or address>\` first.\n[END NEARBY PLACES]\n\n`;
+  }
+
+  /* ── Natural-language place-finder hook ──────────────────────────────────
+     If the user said something like "I just moved to Austin" or "find me
+     places in Brooklyn", run the place finder and inject results as context
+     so Athena can hand them a real list with directions in her reply. */
+  let placesBlock = "";
+  try {
+    const { detectPlaceRequest, findPlaces } = await import("./lib/placeFinder.js");
+    const req = detectPlaceRequest(content);
+    if (req) {
+      console.log(`[PlaceFinder] Detected request → city="${req.city}" interests=[${req.interests.join(",")}]`);
+      try {
+        const places = await findPlaces({ city: req.city, interests: req.interests, count: 6 });
+        if (places.length) {
+          const lines = places.map((p, i) =>
+            `${i + 1}. ${p.name} (${p.category}${p.rating ? ` · ${p.rating}` : ""}) — ${p.address}\n` +
+            `   Vibe: ${p.vibe}\n   Why: ${p.why}\n   Maps: ${p.mapsUrl}\n   Directions: ${p.directionsUrl}`
+          ).join("\n\n");
+          placesBlock =
+            `[LOCAL PLACE RECOMMENDATIONS — ${req.city}]\n` +
+            `Live results from Google Search (well-reviewed, currently open). ` +
+            `Present these to the user with the direct Google Maps links so they can tap to open / get directions.\n\n` +
+            `${lines}\n[END LOCAL PLACE RECOMMENDATIONS]\n\n`;
+        }
+      } catch (err) {
+        console.warn(`[PlaceFinder] lookup failed for "${req.city}": ${err.message}`);
+      }
+    }
+  } catch (_) { /* module optional */ }
+
   /* Include voice call context only if the sender was in a recent call,
      or if this was an explicit voice session query (already in serverContext) */
   const voiceAwareness = voiceSessionRequest
     ? ""  /* explicit query already handled in serverContext — no duplication */
     : await buildVoiceContextForUser(effectiveGuildId, discordUserId);
 
-  const fullMessage = liveContext + knowledgeBlock + weatherBlock + voiceAwareness + serverContext + content;
+  /* Label roster digest — pulled live from Spotify/YouTube on a 30-min
+     cache so Athena always speaks with current numbers without hammering
+     the APIs on every Discord message. Gracefully empty if no providers
+     are configured or if the roster is empty. */
+  let labelBlock = "";
+  try {
+    const digest = await getCachedRosterDigest();
+    if (digest) labelBlock = `${digest}\n\n`;
+  } catch (err) {
+    console.warn(`[MusicAnalytics] Roster digest skipped: ${err.message}`);
+  }
+
+  const fullMessage = liveContext + locationBlock + knowledgeBlock + weatherBlock + nearbyBlock + placesBlock + labelBlock + voiceAwareness + serverContext + content;
 
   let reply;
   try {
@@ -878,11 +1142,158 @@ async function handleLinkAccounts(message) {
   );
 }
 
+/* ──────────────────────────────────────────────────────
+   "DUH" ROLE GATE — business / record-label / tax topics
+   are restricted to members carrying the "Duh" role in the
+   primary DBI guild. We classify intent on the way in so a
+   refusal happens before any AI call (saves tokens and
+   makes the rule visible to the user).
+────────────────────────────────────────────────────── */
+const DUH_ROLE_NAME = "Duh";
+
+const BUSINESS_TOPIC_PATTERNS = [
+  /\b(llc|s[- ]?corp|c[- ]?corp|sole prop(rietor)?|partnership|delaware|incorpor)/i,
+  /\b(operating agreement|cap table|equity|shareholder|profit ?interest|membership interest)\b/i,
+  /\b(reg ?d|reg ?cf|reg ?a\+?|rule ?506|safe note|convertible note|ppm|accredited investor)\b/i,
+  /\b(tax|irs|1099|w-?9|w-?2|k-?1|deduction|write[- ]?off|quarterly est|self[- ]?employment)\b/i,
+  /\b(boi|cta|fincen|ein|nexus|sales tax|wayfair|trademark|uspto|copyright|title 17|mma|dmca)\b/i,
+  /\b(label|roster|signing|advance|recoup|royalt(y|ies)|mechanical|publishing|sync|master use)\b/i,
+  /\b(soundexchange|mlc|hfa|ascap|bmi|sesac|gmr|distribut(ion|or)|360 deal|p&d)\b/i,
+  /\b(booking|venue|festival|tour(ing)?|rider|guarantee|merch|ticket(ing|s)|capacity)\b/i,
+  /\b(business|company|invest(or|ment|ing)|fundrais|raise capital|grow (the|our) (label|company|business))\b/i,
+];
+
+function requiresDuhRole(content) {
+  if (!content) return false;
+  return BUSINESS_TOPIC_PATTERNS.some(rx => rx.test(content));
+}
+
+async function hasDuhRole(userId) {
+  /* Admins always pass. */
+  if (ADMIN_IDS.includes(userId)) return true;
+  if (!primaryGuildId) return false;
+  try {
+    const guild  = client.guilds.cache.get(primaryGuildId);
+    if (!guild) return false;
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (!member) return false;
+    return member.roles.cache.some(r => r.name === DUH_ROLE_NAME);
+  } catch (err) {
+    console.warn("[DuhGate] role lookup failed:", err.message);
+    return false;
+  }
+}
+
+/* ──────────────────────────────────────────────────────
+   ACTIVE VOICE LISTENING — registered with voice.js via
+   setTranscriptHandler() during ClientReady. Fires on
+   every successful Whisper transcription.
+
+   Athena replies (TTS in the same voice channel) when:
+     - the transcript mentions her name, OR
+     - the call has only one human besides her (clearly 1:1)
+
+   A short per-user cooldown prevents her from talking over
+   continuous speech, and the gemini call shares her normal
+   pipeline so the same persona / knowledge / Duh-role gate
+   apply to voice exactly like text.
+────────────────────────────────────────────────────── */
+const voiceReplyCooldown = new Map(); /* userId → lastReplyAt(ms) */
+const VOICE_REPLY_COOLDOWN_MS = 6_000;
+const VOICE_NAME_RX = /\b(athena|atina|athina|athene)\b/i;
+
+async function handleVoiceTranscript({ user, userId, guild, channel, transcript }) {
+  if (!transcript || transcript.length < 2) return;
+  if (!guild || !channel) return;
+
+  /* Decide if this utterance was directed at Athena. */
+  const humans = [...channel.members.values()].filter(m => !m.user.bot).length;
+  const addressed = VOICE_NAME_RX.test(transcript) || humans <= 1;
+  if (!addressed) return;
+
+  /* Cooldown */
+  const last = voiceReplyCooldown.get(userId) || 0;
+  if (Date.now() - last < VOICE_REPLY_COOLDOWN_MS) return;
+  voiceReplyCooldown.set(userId, Date.now());
+
+  console.log(`[VoiceListen] Athena addressed by ${user.username}: "${transcript.substring(0, 80)}"`);
+
+  /* Duh-role gate also applies to voice. */
+  if (requiresDuhRole(transcript) && !(await hasDuhRole(userId))) {
+    await speak(guild, channel,
+      `Sorry ${user.username}, business and label talk is reserved for members with the Duh tag. Catch me on something else.`
+    ).catch(() => {});
+    return;
+  }
+
+  try {
+    const athenaUserId = await getOrCreateAthenaUser(user);
+    let reply = await getAthenaResponse(transcript, athenaUserId, userId, channel, guild);
+    if (!reply || !reply.trim()) return;
+    /* Trim for spoken reply — long answers turn into multi-minute audio. */
+    if (reply.length > 600) reply = reply.substring(0, 600).replace(/\s+\S*$/, "") + "...";
+    await speak(guild, channel, reply);
+  } catch (err) {
+    console.error("[VoiceListen] reply generation failed:", err.message);
+  }
+}
+
 /* ---------------- MESSAGE HANDLER ---------------- */
+/* ──────────────────────────────────────────────────────
+   MULTI-INSTANCE DEDUP LOCK
+   When Railway runs >1 replica, every container receives the same Discord
+   gateway event and would respond. Without this lock, a single user message
+   produces N replies (verified in deployment logs: 3 instances each ran
+   getAthenaResponse on the same DM). We acquire an atomic Firestore lock
+   keyed by message.id — only the first writer (across all containers) wins
+   and proceeds; the others silently abort.
+
+   `.create()` on firebase-admin's DocumentReference fails with ALREADY_EXISTS
+   if the document is present, giving us atomic first-writer-wins semantics
+   without a transaction. Locks auto-expire via a 1-hour TTL field that a
+   future cleanup worker (or Firestore TTL policy) can purge.
+────────────────────────────────────────────────────── */
+const PROCESS_INSTANCE_ID = `${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+async function tryAcquireMessageLock(messageId) {
+  try {
+    const lockRef = firestore.doc(`athena_ai/locks/messages/${messageId}`);
+    await lockRef.create({
+      instance: PROCESS_INSTANCE_ID,
+      acquiredAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    return true;
+  } catch (err) {
+    if (err.code === 6 || /already exists/i.test(err.message || "")) {
+      return false;
+    }
+    /* Unknown error — fail open so a Firestore outage doesn't silence the bot.
+       At worst we get duplicate replies for the duration of the outage. */
+    console.warn(`[MessageLock] Lock check error (failing open): ${err.message}`);
+    return true;
+  }
+}
+
 client.on(Events.MessageCreate, async message => {
   if (message.author.bot) return;
 
   const trimmed = message.content.trim();
+
+  /* Observability: log every incoming non-bot message so silent drops are visible. */
+  try {
+    const where = message.channel?.type === ChannelType.DM
+      ? `DM`
+      : `#${message.channel?.name || "?"}@${message.guild?.name || "?"}`;
+    console.log(`[Msg:${PROCESS_INSTANCE_ID}] ${message.author.username} in ${where}: "${(trimmed || "<empty>").slice(0, 120)}"`);
+  } catch {}
+
+  /* Acquire the cross-instance lock before doing any work that produces a
+     reply. If we lose the race to another container, abort silently. */
+  const won = await tryAcquireMessageLock(message.id);
+  if (!won) {
+    console.log(`[MessageLock] Skipping ${message.id} — another instance already claimed it.`);
+    return;
+  }
 
   /* store every message for awareness — non-blocking */
   storeDiscordMessage(message).catch(() => {});
@@ -1096,7 +1507,273 @@ client.on(Events.MessageCreate, async message => {
     return;
   }
 
-  /* ── !doj — DOJ knowledge management ── */
+  /* ── !research <subject> — queue a deep-research dossier (admin only) ───── */
+  if (trimmed.toLowerCase().startsWith("!research ") || trimmed.toLowerCase() === "!research") {
+    if (!ADMIN_IDS.includes(message.author.id)) {
+      await message.reply("This command is restricted to administrators.");
+      return;
+    }
+    const subject = trimmed.slice("!research".length).trim();
+    if (!subject) {
+      await message.reply("Usage: `!research <Person, Place, or Thing>`\nExample: `!research Chicago`");
+      return;
+    }
+    try {
+      const { enqueueSubject, processSubject } = await import("./lib/deepResearch.js");
+      const queued = await enqueueSubject(subject, `manual:${message.author.username}`);
+      if (queued) {
+        await message.reply(`Queued deep research on **${subject}** — running it now (WHO / WHAT / WHERE / HOW).`);
+      } else {
+        await message.reply(`**${subject}** is already queued or already researched. Re-running anyway.`);
+      }
+      const stored = await processSubject(subject, `manual:${message.author.username}`);
+      await message.reply(
+        stored > 0
+          ? `Done. Stored **${stored}** new fact(s) on ${subject} in my knowledge base.`
+          : `Could not produce accredited sourcing for **${subject}** this pass — try again later or refine the name.`
+      );
+    } catch (err) {
+      console.error("[!research] error:", err);
+      await message.reply(`Research failed: ${err.message}`);
+    }
+    return;
+  }
+
+  /* ── !history [topic | status] — world-history curriculum ──────────────── */
+  if (trimmed.toLowerCase().startsWith("!history")) {
+    if (!ADMIN_IDS.includes(message.author.id)) {
+      await message.reply("This command is restricted to administrators.");
+      return;
+    }
+    const arg = trimmed.slice("!history".length).trim();
+    try {
+      const { learnTopic, runDailyHistorySweep, coverageStats } = await import("./lib/worldHistory.js");
+      if (!arg || arg.toLowerCase() === "status") {
+        const s = await coverageStats();
+        await message.reply(
+          `World-history curriculum: **${s.covered}** topics covered ` +
+          `(${s.pctCurriculum}% of curated curriculum of ${s.curriculum}). ` +
+          `Daily sweep continues until everything is learned, then keeps deepening.`
+        );
+        return;
+      }
+      if (arg.toLowerCase() === "sweep") {
+        await message.reply("Running an extra daily history sweep now...");
+        const n = await runDailyHistorySweep(10);
+        await message.reply(`History sweep complete — stored **${n}** new entries.`);
+        return;
+      }
+      await message.reply(`Researching **${arg}** for the world-history archive...`);
+      const stored = await learnTopic(arg);
+      await message.reply(
+        stored > 0
+          ? `Stored **${stored}** scholarly section(s) on ${arg}.`
+          : `Couldn't produce accredited sourcing for **${arg}** this pass.`
+      );
+    } catch (err) {
+      console.error("[!history] error:", err);
+      await message.reply(`History command failed: ${err.message}`);
+    }
+    return;
+  }
+
+  /* ── !declassified [topic | status] — declassified-records archive ──────── */
+  if (trimmed.toLowerCase().startsWith("!declassified")) {
+    if (!ADMIN_IDS.includes(message.author.id)) {
+      await message.reply("This command is restricted to administrators.");
+      return;
+    }
+    const arg = trimmed.slice("!declassified".length).trim();
+    try {
+      const { learnDeclassifiedTopic, runDailyDeclassifiedSweep, declassifiedCoverageStats } =
+        await import("./lib/declassifiedArchives.js");
+      if (!arg || arg.toLowerCase() === "status") {
+        const s = await declassifiedCoverageStats();
+        await message.reply(
+          `Declassified archive: **${s.covered}/${s.curriculum}** curated topics covered. ` +
+          `Pulled from CIA CREST, FBI Vault, NARA, FRUS, NSA archive (GWU), and presidential libraries.`
+        );
+        return;
+      }
+      if (arg.toLowerCase() === "sweep") {
+        await message.reply("Running an extra declassified sweep now...");
+        const n = await runDailyDeclassifiedSweep(3);
+        await message.reply(`Declassified sweep complete — stored **${n}** new entries.`);
+        return;
+      }
+      await message.reply(`Researching declassified records on **${arg}**...`);
+      const stored = await learnDeclassifiedTopic(arg);
+      await message.reply(
+        stored > 0
+          ? `Stored **${stored}** declassified section(s) on ${arg}.`
+          : `Couldn't produce accredited released-records sourcing for **${arg}** this pass.`
+      );
+    } catch (err) {
+      console.error("[!declassified] error:", err);
+      await message.reply(`Declassified command failed: ${err.message}`);
+    }
+    return;
+  }
+
+  /* ── !places <city> [interests...] — local hangout recommendations ──────── */
+  if (trimmed.toLowerCase().startsWith("!places")) {
+    const args = trimmed.slice("!places".length).trim();
+    if (!args) {
+      await message.reply(
+        "Usage: `!places <city> [interests]`\n" +
+        "Example: `!places Austin coffee music outdoors`"
+      );
+      return;
+    }
+    /* Split on comma first; if no comma, treat first 1-3 capitalized words as the city. */
+    let city, interests = [];
+    if (args.includes(",")) {
+      const [c, ...rest] = args.split(",");
+      city = c.trim();
+      interests = rest.join(",").split(/[ ,]+/).map(s => s.trim()).filter(Boolean);
+    } else {
+      const parts = args.split(/\s+/);
+      const cityWords = [];
+      for (const p of parts) {
+        if (/^[A-Z]/.test(p) && cityWords.length < 3) cityWords.push(p);
+        else { interests.push(p); }
+      }
+      city = cityWords.join(" ") || parts[0];
+      interests = parts.slice(cityWords.length);
+    }
+    try {
+      await message.channel.sendTyping();
+      const { findPlaces, formatPlacesForDiscord } = await import("./lib/placeFinder.js");
+      const places = await findPlaces({ city, interests, count: 6 });
+      await message.reply(formatPlacesForDiscord(city, places));
+    } catch (err) {
+      console.error("[!places] error:", err);
+      await message.reply(`Couldn't pull recommendations: ${err.message}`);
+    }
+    return;
+  }
+
+  /* ── !label / !roster — record-label admin commands ─────────────────────── */
+  if (message.content.startsWith("!label") || message.content.startsWith("!roster")) {
+    if (!ADMIN_IDS.includes(message.author.id)) {
+      await message.reply("This command is restricted to administrators.");
+      return;
+    }
+    const raw  = message.content.replace(/^!(label|roster)\s*/, "").trim();
+    const args = raw.split(/\s+/);
+    const sub  = (args.shift() || "").toLowerCase();
+
+    try {
+      if (!sub || sub === "list") {
+        const roster = await listRoster();
+        if (!roster.length) {
+          await message.reply(
+            "No artists in the label roster yet. Add one with:\n" +
+            "`!label add <id> name=\"Artist Name\" spotify=<spotifyArtistId> youtube=<channelId>`"
+          );
+          return;
+        }
+        const lines = roster.map(a => {
+          const sources = [
+            a.spotifyId        ? `spotify:${a.spotifyId}`    : null,
+            a.youtubeChannelId ? `yt:${a.youtubeChannelId}`  : null,
+            a.tiktokHandle     ? `tt:@${a.tiktokHandle}`     : null,
+          ].filter(Boolean).join(", ");
+          return `• **${a.name || a.id}** (${a.id}) — ${sources || "no sources"}`;
+        }).join("\n");
+        await message.reply(`**Label roster (${roster.length}):**\n${lines}`);
+        return;
+      }
+
+      if (sub === "add") {
+        const id = args.shift();
+        if (!id) { await message.reply("Usage: `!label add <id> name=\"X\" spotify=<id> youtube=<channelId> tiktok=<handle>`"); return; }
+        const rest = raw.replace(/^add\s+\S+\s*/, "");
+        const fields = {};
+        const re = /(\w+)=("([^"]*)"|(\S+))/g;
+        let m;
+        while ((m = re.exec(rest)) !== null) fields[m[1].toLowerCase()] = m[3] ?? m[4];
+        const data = {
+          name:             fields.name             || id,
+          spotifyId:        fields.spotify          || null,
+          youtubeChannelId: fields.youtube          || null,
+          tiktokHandle:     fields.tiktok           || null,
+          instagramHandle:  fields.instagram        || null,
+          appleId:          fields.apple            || null,
+          role:             fields.role             || "artist",
+          signedAt:         fields.signedat         || new Date().toISOString(),
+        };
+        await upsertArtist(id, data);
+        invalidateRosterCache();
+        await message.reply(`Added **${data.name}** to the label roster.`);
+        return;
+      }
+
+      if (sub === "remove" || sub === "rm") {
+        const id = args.shift();
+        if (!id) { await message.reply("Usage: `!label remove <id>`"); return; }
+        await removeArtist(id);
+        invalidateRosterCache();
+        await message.reply(`Removed **${id}** from the label roster.`);
+        return;
+      }
+
+      if (sub === "snapshot" || sub === "snap") {
+        const id = args.shift();
+        if (id) {
+          await message.reply(`Pulling live metrics for **${id}**...`);
+          const snap = await snapshotArtist(id);
+          const sp = snap.spotify, yt = snap.youtube;
+          const lines = [`**${snap.name}** snapshot:`];
+          if (sp) {
+            lines.push(`Spotify — ${sp.followers?.toLocaleString()} followers, popularity ${sp.popularity}/100, genres: ${sp.genres?.join(", ") || "—"}`);
+            if (sp.topTracks?.length) {
+              lines.push(`Top tracks:`);
+              sp.topTracks.slice(0, 5).forEach(t => lines.push(`  • ${t.name} (pop ${t.popularity})`));
+            }
+          }
+          if (yt) {
+            lines.push(`YouTube — ${yt.subscribers?.toLocaleString()} subs, ${yt.totalViews?.toLocaleString()} views, ${yt.videoCount} videos`);
+          }
+          if (!sp && !yt) lines.push("No provider returned data — check API keys and artist IDs.");
+          invalidateRosterCache();
+          await message.reply(lines.join("\n").slice(0, 1900));
+        } else {
+          await message.reply("Pulling live metrics for the entire roster...");
+          const all = await snapshotAllArtists();
+          invalidateRosterCache();
+          await message.reply(formatRosterDigest(all).slice(0, 1900) || "Roster is empty.");
+        }
+        return;
+      }
+
+      if (sub === "status") {
+        const status = providerStatus();
+        const roster = await listRoster();
+        await message.reply(
+          `**Label analytics status:**\n` +
+          `• Spotify: ${status.spotify ? "configured" : "missing SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET"}\n` +
+          `• YouTube: ${status.youtube ? "configured" : "missing YOUTUBE_API_KEY"}\n` +
+          `• Roster size: ${roster.length} artist${roster.length === 1 ? "" : "s"}`
+        );
+        return;
+      }
+
+      await message.reply(
+        "**!label commands** (admin only):\n" +
+        "`!label list` — show current roster\n" +
+        "`!label add <id> name=\"X\" spotify=<id> youtube=<channelId> tiktok=<handle>` — add artist\n" +
+        "`!label remove <id>` — drop artist\n" +
+        "`!label snapshot [id]` — pull live metrics for one artist or whole roster\n" +
+        "`!label status` — show provider configuration"
+      );
+    } catch (err) {
+      console.error("[!label] error:", err);
+      await message.reply(`Label command failed: ${err.message}`);
+    }
+    return;
+  }
+
   if (message.content.startsWith("!doj")) {
     if (!ADMIN_IDS.includes(message.author.id)) {
       await message.reply("This command is restricted to administrators.");
@@ -1162,6 +1839,80 @@ client.on(Events.MessageCreate, async message => {
   const isDM = message.channel.type === ChannelType.DM;
   const mentionsAthena = message.content.toLowerCase().includes("athena");
 
+  /* ── !setlocation / !whereami / !nearby — location commands (everyone) ── */
+  if (trimmed.toLowerCase().startsWith("!setlocation")) {
+    const text = trimmed.slice("!setlocation".length).trim();
+    if (!text) {
+      await message.reply("Usage: `!setlocation <city or address>` — e.g. `!setlocation Brooklyn, NY`");
+      return;
+    }
+    try {
+      const athenaUserId = await getOrCreateAthenaUser(message.author);
+      const geo = await geocodeLocation(text);
+      await setUserLocation(athenaUserId, geo);
+      await message.reply(
+        `Location saved: **${geo.label}** (${geo.lat.toFixed(4)}, ${geo.lon.toFixed(4)}).\n` +
+        `https://www.google.com/maps/search/?api=1&query=${geo.lat},${geo.lon}\n` +
+        `I'll tag your messages with this location until you change it. Try \`!nearby coffee\`.`
+      );
+    } catch (err) {
+      await message.reply(`Couldn't set that location: ${err.message}`);
+    }
+    return;
+  }
+
+  if (trimmed.toLowerCase() === "!whereami" || trimmed.toLowerCase() === "!mylocation") {
+    try {
+      const athenaUserId = await getOrCreateAthenaUser(message.author);
+      const loc = await getUserLocation(athenaUserId);
+      if (!loc) {
+        await message.reply("I don't have a location on file for you. Set one with `!setlocation <city or address>`.");
+        return;
+      }
+      const ageMin = Math.round((Date.now() - loc.updatedAt) / 60000);
+      const ageStr = ageMin >= 60 ? `${Math.round(ageMin / 60)}h` : `${ageMin}m`;
+      await message.reply(
+        `Your location on file: **${loc.label}** (${loc.lat.toFixed(4)}, ${loc.lon.toFixed(4)})\n` +
+        `Source: ${loc.source === "mobile" ? "live mobile GPS" : "saved value"} · updated ${ageStr} ago\n` +
+        `https://www.google.com/maps/search/?api=1&query=${loc.lat},${loc.lon}`
+      );
+    } catch (err) {
+      await message.reply(`Lookup failed: ${err.message}`);
+    }
+    return;
+  }
+
+  if (trimmed.toLowerCase().startsWith("!nearby")) {
+    const query = trimmed.slice("!nearby".length).trim();
+    try {
+      const athenaUserId = await getOrCreateAthenaUser(message.author);
+      const loc = await getUserLocation(athenaUserId);
+      if (!loc) {
+        await message.reply("Set your location first with `!setlocation <city or address>`, then try again.");
+        return;
+      }
+      await message.channel.sendTyping().catch(() => {});
+      const { provider, places } = await nearbyPlaces({
+        lat: loc.lat, lon: loc.lon, query, radiusMeters: 2500, limit: 8,
+      });
+      if (!places.length) {
+        await message.reply(`No "${query || "places"}" found within 2.5km of ${loc.label}. Try a different keyword or wider scope.`);
+        return;
+      }
+      const lines = places.map((p, i) => {
+        const dist = p.distance_m < 1000 ? `${p.distance_m}m` : `${(p.distance_m / 1000).toFixed(1)}km`;
+        const ratingPart = p.rating ? ` · ${p.rating}` : "";
+        return `${i + 1}. **${p.name}** (${p.type}, ${dist}${ratingPart})\n   ${p.mapsUrl}`;
+      }).join("\n");
+      const reply = `**${query || "Places"} near ${loc.label}** (via ${provider === "google" ? "Google Places" : "OpenStreetMap"}):\n\n${lines}`;
+      const chunks = reply.match(/[\s\S]{1,1990}/g) || [reply];
+      for (const c of chunks) await message.reply(c);
+    } catch (err) {
+      await message.reply(`Nearby lookup failed: ${err.message}`);
+    }
+    return;
+  }
+
   /* ── Quiz answer guard ─────────────────────────────────────────────────────
      When a user is mid-quiz the quizRunner's awaitMessages() collector owns
      their DM messages. If we let them fall through here, Athena fires a second
@@ -1190,7 +1941,7 @@ client.on(Events.MessageCreate, async message => {
     } else {
       await message.reply(
         "**Starting your DBI NationZ Quiz.**\n\n" +
-        "50 questions total — 20 core + 30 drawn from the pool.\n" +
+        "59 questions total — 29 core + 30 drawn from the pool.\n" +
         "You have **2 minutes** to answer each question. Reply with **A**, **B**, **C**, or **D**.\n\n" +
         "Beginning now..."
       );
@@ -1256,12 +2007,94 @@ client.on(Events.MessageCreate, async message => {
     const athenaUserId = await getOrCreateAthenaUser(message.author);
     recordActivity(athenaUserId, "discord").catch(() => {});
 
+    /* ── Duh-role gate: business / label / tax topics only for "Duh" members ── */
+    if (requiresDuhRole(message.content) && !(await hasDuhRole(message.author.id))) {
+      await message.reply(
+        "Business and record-label conversations — including tax code, entity structure, " +
+        "raises, royalties, and the label roster — are reserved for members with the **Duh** tag. " +
+        "Talk to LaVillain about access."
+      );
+      return;
+    }
+
     await message.channel.sendTyping();
 
     /* pass the channel and guild for context (null in DMs) */
     const channel = isDM ? null : message.channel;
     const guild = isDM ? null : message.guild;
-    let reply = await getAthenaResponse(message.content, athenaUserId, message.author.id, channel, guild);
+
+    /* ── Discord reply-context resolution ──
+       If the user used Discord's "Reply" feature, fetch the message they're
+       replying to so Athena knows what "this question" / "that answer" refers
+       to. Without this she hallucinates context (e.g. defaulting to the DBI
+       quiz when asked to "resend the answer to this question as audio"). */
+    let referencedMessage = null;
+    let referencedFromAthena = false;
+    if (message.reference?.messageId) {
+      try {
+        referencedMessage = await message.channel.messages.fetch(message.reference.messageId);
+        referencedFromAthena = referencedMessage.author?.id === client.user?.id;
+        console.log(
+          `[ReplyCtx] User replied to ${referencedFromAthena ? "Athena's" : referencedMessage.author?.username + "'s"} ` +
+          `message: "${(referencedMessage.content || "").slice(0, 80)}..."`
+        );
+      } catch (refErr) {
+        console.warn(`[ReplyCtx] Could not fetch referenced message: ${refErr.message}`);
+      }
+    }
+
+    /* ── Audio re-send shortcut ──
+       If the user replied to one of Athena's own messages and is asking for
+       it as audio ("resend as audio", "read this aloud", etc.), skip Gemini
+       entirely and TTS the EXACT referenced text. This was previously asking
+       Gemini to "answer the question" with no context, producing hallucinated
+       replies about totally unrelated topics. */
+    if (referencedFromAthena && isAudioRequest(message.content) && referencedMessage.content?.trim()) {
+      console.log("[ReplyCtx] Audio re-send shortcut — TTS-ing referenced Athena message directly.");
+      const sourceText = referencedMessage.content.trim();
+      const audioParts = splitResponseForAudio(sourceText, 5000);
+      let audioSent = false;
+      let lastAudioError = null;
+      for (let i = 0; i < audioParts.length; i++) {
+        const target = i === 0 ? message : message.channel;
+        const label = audioParts.length > 1
+          ? `athena_audio_resend_${i + 1}_of_${audioParts.length}`
+          : "athena_audio_resend";
+        if (i > 0) await new Promise(r => setTimeout(r, 3000));
+        try {
+          const result = await sendAudioMessage(target, audioParts[i], label);
+          if (result.ok) audioSent = true;
+          else if (i === 0) { lastAudioError = result.error; break; }
+        } catch (err) {
+          if (i === 0) { lastAudioError = err.message; break; }
+        }
+      }
+      if (!audioSent) {
+        await message.reply(`I couldn't generate the audio (${lastAudioError || "unknown error"}). Here's the text again:\n\n${sourceText.slice(0, 1900)}`);
+      }
+      return;
+    }
+
+    /* Build reply-context block for Gemini when there's a reference but it's
+       not a simple audio re-send. */
+    let replyContextBlock = "";
+    if (referencedMessage) {
+      const author = referencedFromAthena
+        ? "you (Athena, in an earlier reply)"
+        : `${referencedMessage.author?.username || "another user"}`;
+      const refContent = (referencedMessage.content || "[no text — possibly an attachment]").slice(0, 4000);
+      replyContextBlock =
+        `[USER IS REPLYING TO AN EARLIER MESSAGE]\n` +
+        `Author of the earlier message: ${author}\n` +
+        `Earlier message text:\n"""${refContent}"""\n` +
+        `Treat the user's current message as a follow-up about this earlier one. ` +
+        `If they say "this question" / "that answer" / "resend it" / etc., they mean the earlier message above. ` +
+        `Do NOT change topic or invent unrelated context.\n` +
+        `[END USER IS REPLYING]\n\n`;
+    }
+
+    const promptForGemini = replyContextBlock + message.content;
+    let reply = await getAthenaResponse(promptForGemini, athenaUserId, message.author.id, channel, guild);
 
     /* Guard: Gemini can return an empty string when search grounding consumes the full
        context without generating visible text. Fall back to a safe default. */
@@ -1275,9 +2108,13 @@ client.on(Events.MessageCreate, async message => {
        Priority: named channel by message text → user's current channel → none */
     {
       const lower = message.content.toLowerCase();
+      /* Both patterns now REQUIRE explicit voice context (voice|vc|call|channel|chat|talk)
+         within ~35 chars. Without this guard, phrases like "athena, join me in figuring
+         this out" were triggering the join flow → join would fail → user would receive
+         BOTH a "couldn't join" reply AND the normal AI reply (a duplicate response). */
       const wantsVoiceJoin =
         /\b(join|come to|hop in|get in|enter|jump in)\b.{0,35}\b(voice|vc|call|channel|chat|talk)\b/i.test(message.content) ||
-        /\bjoin (me|us)\b/i.test(message.content);
+        /\bjoin\s+(me|us)\b.{0,35}\b(voice|vc|call|channel|chat|talk)\b/i.test(message.content);
 
       if (wantsVoiceJoin) {
         /* Resolve the guild — from a server message or from primary guild (DMs) */
@@ -1332,7 +2169,9 @@ client.on(Events.MessageCreate, async message => {
             } catch (joinErr) {
               console.error("[VoiceJoin] Join failed:", joinErr.message);
               await message.reply(`I couldn't join that channel: ${joinErr.message}`).catch(() => {});
-              /* fall through to normal reply */
+              /* Return so we don't ALSO send the normal AI text reply — that was producing
+                 a double response whenever a voice-join attempt failed. */
+              return;
             }
           } else if (isDM) {
             await message.reply(
@@ -1402,10 +2241,24 @@ client.on(Events.MessageCreate, async message => {
         for (const chunk of chunks) await message.reply(chunk);
       }
     } else {
-      /* ── Text request: send text only ── */
+      /* ── Text request: send text only ──
+         Discord's hard per-message limit is 2000 characters. When a reply is longer
+         we used to chunk it into N separate messages, which the user reported as
+         "sent in multiple messages instead of one giant message." We now send the
+         full reply as a single .txt attachment (with a short inline preview) so it
+         arrives as a single Discord message that contains the entire answer. */
       if (reply.length > 2000) {
-        const chunks = reply.match(/[\s\S]{1,1990}/g) || [reply];
-        for (const chunk of chunks) await message.reply(chunk);
+        const previewLen = 1500;
+        const preview = reply.slice(0, previewLen).trim();
+        const buffer = Buffer.from(reply, "utf8");
+        const attachment = new AttachmentBuilder(buffer, {
+          name: `athena_answer_${Date.now()}.txt`,
+          description: "Full Athena response (too long to fit in one Discord message)",
+        });
+        await message.reply({
+          content: `${preview}…\n\n_Full answer attached — Discord caps a single message at 2000 characters and this reply is ${reply.length}. Tap the file to read the rest._`,
+          files: [attachment],
+        });
       } else {
         await message.reply(reply);
       }
@@ -1618,7 +2471,9 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
       discordId: user.id,
       displayName: user.globalName || user.username,
       joinTime: Date.now(),
-    }).catch(() => {});
+    }).catch(err =>
+      console.warn(`[Voice] recordParticipantJoin failed for ${user.username} → ${session.sessionId}: ${err.message}`)
+    );
 
     /* Ensure voice recognition profile exists for this user */
     if (athenaUserId) {
@@ -1651,6 +2506,136 @@ client.once(Events.ClientReady, async () => {
   if (!primaryGuildId && client.guilds.cache.size > 0) {
     primaryGuildId = client.guilds.cache.first().id;
     console.log(`[Athena] Primary guild: ${client.guilds.cache.first().name} (${primaryGuildId})`);
+  }
+
+  /* ── Active voice listening ───────────────────────────────────────────
+     When Athena is in a voice channel and someone says her name (or it's
+     a quiet 1:1 call where every utterance is clearly directed at her),
+     she generates an AI reply and speaks it back via TTS. Cooldown per
+     user prevents flooding when one person is talking continuously. */
+  setTranscriptHandler(handleVoiceTranscript);
+
+  /* ── Deep-research worker ─────────────────────────────────────────────
+     Drains research_queue every 90s. When new knowledge lands in
+     athena_knowledge, knowledgeUpdater auto-extracts proper-noun subjects
+     and queues them; this worker turns each subject into a WHO/WHAT/
+     WHERE/HOW dossier and stores it back as new knowledge. */
+  try {
+    const { startDeepResearchWorker } = await import("./lib/deepResearch.js");
+    startDeepResearchWorker();
+  } catch (err) {
+    console.error("[DeepResearch] worker boot failed:", err.message);
+  }
+
+  /* ── Knowledge gap analyzer ───────────────────────────────────────────
+     Every 30 min Athena samples 200 random verified entries from
+     athena_knowledge, asks Gemini to cluster them and identify gaps
+     (theoretical-vs-practical, abstract-vs-stepwise, global-vs-local-
+     materials, expert-vs-beginner, historical-vs-current, single-source).
+     Each gap produces ONE concrete research topic that gets pushed into
+     research_queue with subjectType="practical" so the deep-research
+     worker turns it into a step-by-step dossier with materials, day-by-day
+     timeline, and safety/verification — closing the gap automatically.
+     Reports archived in knowledge_gap_reports for audit. */
+  try {
+    const { startGapAnalyzer } = await import("./lib/knowledgeGapAnalyzer.js");
+    startGapAnalyzer();
+  } catch (err) {
+    console.error("[GapAnalyzer] boot failed:", err.message);
+  }
+
+  /* 0. Firestore startup self-test — full write/read/delete probe per critical
+        collection. Each probe writes a sentinel doc with id "__startup_probe__",
+        reads it back, and deletes it. The sentinel docId is filterable so it
+        won't pollute production queries (which all use where(...) filters on
+        title/source/etc.). Every probe logs an explicit PASS or FAIL line so
+        a glance at PM2 logs reveals whether each collection is healthy. */
+  const PROBE_COLLECTIONS = [
+    "messages",
+    "athena_knowledge",
+    "voice_fingerprints",
+    "voice_sessions",
+    "member_visual_profiles",
+    "discord_quiz_results",
+  ];
+  /* Unique per-instance probe id so concurrent bot instances don't collide. */
+  const PROBE_DOC_ID = `__startup_probe__${process.pid}_${Date.now()}`;
+  const probeStarted = Date.now();
+  for (const col of PROBE_COLLECTIONS) {
+    const ref = firestore.collection(col).doc(PROBE_DOC_ID);
+    try {
+      await ref.set({
+        _probe:    true,
+        bootedAt:  admin.firestore.FieldValue.serverTimestamp(),
+        pid:       process.pid,
+        host:      process.env.HOSTNAME || "unknown",
+      });
+      const snap = await ref.get();
+      if (!snap.exists) {
+        console.error(`[Firestore:${col}] Self-test FAIL — write succeeded but read returned empty.`);
+        continue;
+      }
+      console.log(`[Firestore:${col}] Self-test PASS (write+read+delete)`);
+    } catch (err) {
+      console.error(`[Firestore:${col}] Self-test FAIL —`, err.message);
+    } finally {
+      /* Best-effort cleanup so sentinel docs never linger in production
+         collections, even if read or set partially failed. */
+      try { await ref.delete(); } catch {}
+    }
+  }
+  console.log(`[Firestore] Startup probes completed in ${Date.now() - probeStarted}ms`);
+
+  /* Supplemental single-doc round-trip on a dedicated diagnostics path.
+     This proves Firestore connectivity end-to-end on a non-production
+     collection so any orphan docs are isolated from real data. */
+  {
+    const diagRef = firestore.collection("_diagnostics").doc(`startup_${process.pid}_${Date.now()}`);
+    try {
+      await diagRef.set({
+        at:    admin.firestore.FieldValue.serverTimestamp(),
+        pid:   process.pid,
+        host:  process.env.HOSTNAME || "unknown",
+        probeId: PROBE_DOC_ID,
+      });
+      const diagSnap = await diagRef.get();
+      if (diagSnap.exists) {
+        console.log(`[Firestore:_diagnostics/startup] Round-trip PASS (write+read+delete)`);
+      } else {
+        console.error(`[Firestore:_diagnostics/startup] Round-trip FAIL — wrote but read empty.`);
+      }
+    } catch (err) {
+      console.error(`[Firestore:_diagnostics/startup] Round-trip FAIL —`, err.message);
+    } finally {
+      try { await diagRef.delete(); } catch {}
+    }
+  }
+
+  /* Probe the actual nested voice-session path used at runtime
+     (athena_ai/voice_sessions/sessions). The top-level voice_sessions probe
+     above only validates root-collection access; this probe validates the
+     real write path used by voiceRecognition.js. */
+  {
+    const nestedRef = firestore
+      .collection("athena_ai").doc("voice_sessions")
+      .collection("sessions").doc(PROBE_DOC_ID);
+    try {
+      await nestedRef.set({
+        _probe:   true,
+        bootedAt: admin.firestore.FieldValue.serverTimestamp(),
+        pid:      process.pid,
+      });
+      const nestedSnap = await nestedRef.get();
+      if (nestedSnap.exists) {
+        console.log(`[Firestore:athena_ai/voice_sessions/sessions] Self-test PASS (write+read+delete)`);
+      } else {
+        console.error(`[Firestore:athena_ai/voice_sessions/sessions] Self-test FAIL — write succeeded but read returned empty.`);
+      }
+    } catch (err) {
+      console.error(`[Firestore:athena_ai/voice_sessions/sessions] Self-test FAIL —`, err.message);
+    } finally {
+      try { await nestedRef.delete(); } catch {}
+    }
   }
 
   /* 1. Sync ALL guild members → full contact cards (bots excluded) */
@@ -1708,6 +2693,105 @@ client.once(Events.ClientReady, async () => {
       .catch(err => console.error("[DOJ] Daily sync failed:", err.message));
   }, 24 * 60 * 60 * 1000);
 
+  /* 5.7. Regional knowledge sweep — pulls one news article per U.S. state and
+          per continent every 24 hours so Athena always has fresh per-region
+          coverage. Initial run after 60s so it doesn't pile on top of DOJ
+          startup sync; recurring run every 24h. */
+  const { runDailySweep, REGIONS } = await import("./lib/regionalFetcher.js");
+  const { runProfileSweep }        = await import("./lib/regionalProfile.js");
+  const { storeNewKnowledge }      = await import("./lib/knowledgeUpdater.js");
+  const regionalStoreFn = entry =>
+    storeNewKnowledge({
+      title:       entry.title,
+      body:        entry.content,
+      source:      entry.source,
+      verified:    entry.verified,
+      explanation: `Regional update for ${entry.region} (${entry.category})`,
+    });
+
+  setTimeout(() => {
+    runDailySweep(regionalStoreFn).catch(err =>
+      console.error("[RegionalSweep] Startup sweep failed:", err.message)
+    );
+  }, 60_000);
+
+  setInterval(() => {
+    runDailySweep(regionalStoreFn).catch(err =>
+      console.error("[RegionalSweep] Daily sweep failed:", err.message)
+    );
+  }, 24 * 60 * 60 * 1000);
+
+  /* 5.8. Regional ORIGIN/HISTORY profile sweep — pulls Encyclopaedia
+          Britannica summaries (accredited reference source) for History,
+          Geography, Economy, and People of every U.S. state and continent.
+          Runs ~3 minutes after startup so it doesn't collide with the news
+          sweep, and weekly thereafter — storeNewKnowledge dedupes by
+          title so re-runs are cheap. Wikipedia is excluded by policy. */
+  setTimeout(() => {
+    runProfileSweep(REGIONS, regionalStoreFn).catch(err =>
+      console.error("[RegionalProfile] Startup sweep failed:", err.message)
+    );
+  }, 3 * 60_000);
+
+  setInterval(() => {
+    runProfileSweep(REGIONS, regionalStoreFn).catch(err =>
+      console.error("[RegionalProfile] Weekly sweep failed:", err.message)
+    );
+  }, 7 * 24 * 60 * 60 * 1000);
+
+  /* 5.9. Regional DEEP profile sweep — per-region living profile covering
+          weather snapshot, population, business count, crime stats, active
+          + canceled construction projects, and landscape changes. Pulled via
+          Gemini grounded search (accredited sources) plus a live OpenWeather
+          snapshot for the regional capital. Runs ~6 minutes after startup
+          (after the news + Britannica passes), then every 3 days. */
+  const { runDeepProfileSweep } = await import("./lib/regionalDeepProfile.js");
+  setTimeout(() => {
+    runDeepProfileSweep(REGIONS).catch(err =>
+      console.error("[RegionalDeepProfile] Startup sweep failed:", err.message)
+    );
+  }, 6 * 60_000);
+
+  setInterval(() => {
+    runDeepProfileSweep(REGIONS).catch(err =>
+      console.error("[RegionalDeepProfile] Recurring sweep failed:", err.message)
+    );
+  }, 3 * 24 * 60 * 60 * 1000);
+
+  /* 5.10. World-history curriculum sweep — every day Athena learns 10 new
+           historical topics from her curated era × region curriculum (and
+           AI-suggested topics once the curriculum is exhausted). Runs ~9 min
+           after startup, then every 24h. Curriculum is breadth-first across
+           all eras so coverage builds evenly. */
+  const { runDailyHistorySweep } = await import("./lib/worldHistory.js");
+  setTimeout(() => {
+    runDailyHistorySweep(10).catch(err =>
+      console.error("[WorldHistory] Startup sweep failed:", err.message)
+    );
+  }, 9 * 60_000);
+  setInterval(() => {
+    runDailyHistorySweep(10).catch(err =>
+      console.error("[WorldHistory] Daily sweep failed:", err.message)
+    );
+  }, 24 * 60 * 60 * 1000);
+
+  /* 5.11. Declassified-archives sweep — every day Athena pulls 3 declassified
+           programs/episodes from official reading rooms (CIA CREST, FBI Vault,
+           NARA, FRUS, presidential libraries, National Security Archive at
+           GWU). Released material only — Athena's policy excludes leaks and
+           unverified intel. Runs ~12 min after startup, then every 24h. */
+  const { runDailyDeclassifiedSweep } = await import("./lib/declassifiedArchives.js");
+  setTimeout(() => {
+    runDailyDeclassifiedSweep(3).catch(err =>
+      console.error("[Declassified] Startup sweep failed:", err.message)
+    );
+  }, 12 * 60_000);
+  setInterval(() => {
+    runDailyDeclassifiedSweep(3).catch(err =>
+      console.error("[Declassified] Daily sweep failed:", err.message)
+    );
+  }, 24 * 60 * 60 * 1000);
+
   /* 5.6. Weekly quiz reminders — DM every member who hasn't completed the quiz */
   const primaryGuild = primaryGuildId ? client.guilds.cache.get(primaryGuildId) : client.guilds.cache.first();
   if (primaryGuild) {
@@ -1758,7 +2842,9 @@ client.once(Events.ClientReady, async () => {
           discordId: member.user.id,
           displayName: member.user.globalName || member.user.username,
           joinTime: Date.now(),
-        }).catch(() => {});
+        }).catch(err =>
+          console.warn(`[VoiceBackfill] recordParticipantJoin failed for ${member.user.username} → ${session.sessionId}: ${err.message}`)
+        );
       }
       console.log(`[VoiceBackfill] Resumed session for #${channel.name} — ${humanMembers.length} humans already present`);
 
@@ -1775,6 +2861,91 @@ client.once(Events.ClientReady, async () => {
       }
     }
   }
+
+  /* 7. ── Voice guardian ─────────────────────────────────────────────────────
+        Every 30 seconds, walk every active session and verify Athena still has
+        a live voice connection in that channel. If she dropped (network blip,
+        gateway closed the connection) and humans are still present, silently
+        re-establish a fresh passive connection. Skips channels Athena was
+        kicked from (4014 → 5min cooldown) and avoids stacking concurrent join
+        attempts via an in-flight set. */
+  const guardianInFlight  = new Set(); /* channelIds with a pending join */
+  const guardianBackoff   = new Map(); /* channelId → nextAttemptMs after failure */
+  const guardianLastDelay = new Map(); /* channelId → last delay (ms) used, for exponential growth */
+  const guardianCrossChannelWarned = new Set(); /* channelIds we've already warned about being held by a different-channel passive conn (avoids log spam) */
+
+  /* Guardian tick reduced from 30s → 10s so a dropped session is re-established
+     within seconds instead of up to half a minute later. */
+  setInterval(async () => {
+    for (const [, guild] of client.guilds.cache) {
+      for (const [channelId, session] of activeSessions) {
+        if (session.guildId !== guild.id) continue;
+        if (guardianInFlight.has(channelId)) continue;
+        if (isChannelEvicted(channelId)) continue;
+
+        const backoffUntil = guardianBackoff.get(channelId) ?? 0;
+        if (Date.now() < backoffUntil) continue;
+
+        const channel = guild.channels.cache.get(channelId);
+        if (!channel || channel.type !== ChannelType.GuildVoice) continue;
+
+        const humansPresent = [...channel.members.values()].filter(m => !m.user.bot).length;
+        if (humansPresent === 0) continue;
+
+        const connectedHere =
+          isInVoice(guild.id) && getVoiceChannelId(guild.id) === channelId;
+        if (connectedHere) {
+          guardianBackoff.delete(channelId);
+          continue;
+        }
+
+        console.log(
+          `[VoiceGuardian] Athena missing from #${channel.name} (${humansPresent} humans present) — re-establishing.`
+        );
+        guardianInFlight.add(channelId);
+        joinChannel(guild, channel, { passive: true })
+          .then(state => {
+            /* joinChannel() may return an existing passive connection in a
+               *different* channel within the same guild. In that case do NOT
+               attach a listener to the wrong connection — that would stack
+               duplicate receivers. Verify channel match first. */
+            if (state.channelId !== channelId) {
+              /* Single-voice-per-guild limitation: an existing passive
+                 connection is in a different channel. Warn once per channel
+                 to keep logs high-signal, then back off for 5 minutes. */
+              if (!guardianCrossChannelWarned.has(channelId)) {
+                console.warn(
+                  `[VoiceGuardian] Cannot rejoin #${channel.name}: existing passive connection in different channel (${state.channelId}); single-voice-per-guild. Suppressing further warnings for this channel.`
+                );
+                guardianCrossChannelWarned.add(channelId);
+              }
+              guardianBackoff.set(channelId, Date.now() + 5 * 60_000);
+              guardianLastDelay.set(channelId, 5 * 60_000);
+              return;
+            }
+            startListeningInChannel(state.connection, guild, client, session.sessionId);
+            guardianBackoff.delete(channelId);
+            guardianLastDelay.delete(channelId);
+            guardianCrossChannelWarned.delete(channelId);
+            console.log(`[VoiceGuardian] Re-established passive listen in #${channel.name}`);
+          })
+          .catch(err => {
+            /* Exponential backoff on duration (not absolute timestamps):
+               start at 60s, double each failure, cap at 10min. */
+            const prevDelay = guardianLastDelay.get(channelId) ?? 0;
+            const nextDelay = prevDelay
+              ? Math.min(10 * 60_000, prevDelay * 2)
+              : 60_000;
+            guardianLastDelay.set(channelId, nextDelay);
+            guardianBackoff.set(channelId, Date.now() + nextDelay);
+            console.warn(`[VoiceGuardian] Failed to re-join #${channel.name}: ${err.message} — backing off ${Math.round(nextDelay/1000)}s`);
+          })
+          .finally(() => {
+            guardianInFlight.delete(channelId);
+          });
+      }
+    }
+  }, 10_000);
 });
 
 /* ---------------- LOGIN ---------------- */

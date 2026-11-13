@@ -82,6 +82,7 @@ If this is not a photo of a real person (e.g., it is an anime avatar, cartoon, o
         },
         { merge: true }
       );
+      console.log(`[Firestore:member_visual_profiles] Stored NON_HUMAN avatar for ${user.username}`);
       return;
     }
 
@@ -98,9 +99,9 @@ If this is not a photo of a real person (e.g., it is an anime avatar, cartoon, o
       { merge: true }
     );
 
-    console.log(`[VisualID] Stored visual profile for ${user.username}`);
+    console.log(`[Firestore:member_visual_profiles] Stored visual profile for ${user.username}`);
   } catch (err) {
-    console.error(`[VisualID] storeMemberVisualProfile error for ${user?.username}:`, err.message);
+    console.error(`[Firestore:member_visual_profiles] storeMemberVisualProfile FAILED for ${user?.username}:`, err.message);
   }
 }
 
