@@ -1,3 +1,4 @@
+import { startAthenaAPI } from "./api/server.js";
 import "dotenv/config";
 import { Client, GatewayIntentBits, Events, Partials, ChannelType, AttachmentBuilder } from "discord.js";
 import { GoogleGenerativeAI } from "@google/generative-ai";
