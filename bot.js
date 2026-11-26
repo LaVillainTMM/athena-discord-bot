@@ -451,7 +451,7 @@ MOBILE APP:
 Keep responses concise for Discord (under 1800 characters when possible).`;
 
 const MODEL_CANDIDATES = [
-  process.env.GEMINI_MODEL || "gemini-2.5-pro"
+  process.env.GEMINI_MODEL || "gemini-3.1-pro-preview"
 ];
 
 let activeModel = null;
