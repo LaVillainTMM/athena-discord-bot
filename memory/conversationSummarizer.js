@@ -1,4 +1,4 @@
-// File: memory/conversationSummarizer.js
+
 import { firestore } from "../firebase.js";
 import { GoogleGenAI } from "@google/genai";
 
@@ -6,33 +6,35 @@ const genAI = new GoogleGenAI({
   apiKey: process.env.GOOGLE_GENAI_API_KEY
 });
 
-const db = firestore;
-
 export async function summarizeChannel(channelId) {
   try {
-    const snapshot = await db
+    const snapshot = await firestore
       .collection("messages")
-      .where("channelId", "==", channelId) // 🔥 IMPORTANT FIX
+      .where("channelId", "==", channelId)
       .limit(100)
       .get();
 
-    let text = "";
+    const text = snapshot.docs
+      .map(doc => doc.data().content)
+      .filter(value => typeof value === "string")
+      .join("\n");
 
-    snapshot.forEach(doc => {
-      text += doc.data().content + "\n";
-    });
+    if (!text.trim()) {
+      return "No messages to summarize.";
+    }
 
-    if (!text) return "No messages to summarize.";
-
-    /* ✅ NEW SDK CALL */
     const result = await genAI.models.generateContent({
-      model: "gemini-1.5-flash",
+      model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
       contents: `Summarize the following conversation:\n${text}`
     });
 
-    const summary = result.text || "No summary generated.";
+    const summary = result.text?.trim();
 
-    await db.collection("athena_memory").add({
+    if (!summary) {
+      return "No summary generated.";
+    }
+
+    await firestore.collection("athena_memory").add({
       channelId,
       summary,
       createdAt: new Date()
@@ -41,7 +43,11 @@ export async function summarizeChannel(channelId) {
     return summary;
 
   } catch (error) {
-    console.error("Summarization error:", error);
+    console.error(
+      "[Athena Memory] Summarization error:",
+      error.message
+    );
+
     return "Error generating summary.";
   }
 }
