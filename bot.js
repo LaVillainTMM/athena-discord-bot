@@ -2500,6 +2500,7 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
 
 /* ---------------- READY ---------------- */
 client.once(Events.ClientReady, async () => {
+  startRealtimeStatus();
   console.log(`[Athena] Online as ${client.user.tag}`);
 
   /* store primary guild ID so DM history queries work */
