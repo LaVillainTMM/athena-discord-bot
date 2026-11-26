@@ -2797,6 +2797,11 @@ if (backgroundTasksEnabled) {
     );
   }, 24 * 60 * 60 * 1000);
 
+  } else {
+  console.log(
+    "[Athena] Background tasks paused. Conversation mode active."
+  );
+}
   /* 5.6. Weekly quiz reminders — DM every member who hasn't completed the quiz */
   const primaryGuild = primaryGuildId ? client.guilds.cache.get(primaryGuildId) : client.guilds.cache.first();
   if (primaryGuild) {
