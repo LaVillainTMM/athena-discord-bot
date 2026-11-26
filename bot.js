@@ -488,7 +488,17 @@ async function getWorkingModel() {
       console.log(`[Gemini] Using model: ${name}`);
       return activeModel;
     } catch (err) {
-      console.log(`[Gemini] Model ${name} unavailable: ${err.message.substring(0, 80)}`);
+      const safeError = String(
+  err.message || "Unknown error"
+).split(
+  process.env.GOOGLE_GENAI_API_KEY || "[NO_KEY]"
+).join("[REDACTED]");
+
+console.error(
+  `[Gemini] Model ${name} unavailable:`,
+  err.status || "Unknown status",
+  safeError
+);
     }
   }
   throw new Error("No Gemini model available. Check your GOOGLE_GENAI_API_KEY.");
