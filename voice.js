@@ -699,22 +699,22 @@ async function processVoiceSample(userId, user, guild, opusChunks, durationMs, s
 
   try {
     /* Decode Opus packets → raw PCM using @discordjs/opus */
-    const encoder = new OpusScript(
-  48000,
-  2,
-  OpusScript.Application.AUDIO
-);
     const pcmChunks = [];
-    for (const packet of opusChunks) {
-      try {
-        const decoded = encoder.decode(packet);
-        pcmChunks.push(decoded);
-      } catch (_) {
-        /* skip malformed packets */
-      }
-    }
 
-    if (pcmChunks.length === 0) return;
+try {
+  for (const packet of opusChunks) {
+    try {
+      const decoded = encoder.decode(packet);
+      pcmChunks.push(Buffer.from(decoded));
+    } catch (_) {
+      // Skip malformed audio packets.
+    }
+  }
+} finally {
+  encoder.delete();
+}
+
+if (pcmChunks.length === 0) return;
 
     const pcmBuffer = Buffer.concat(pcmChunks);
 
