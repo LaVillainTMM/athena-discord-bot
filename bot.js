@@ -2515,6 +2515,10 @@ client.once(Events.ClientReady, async () => {
      she generates an AI reply and speaks it back via TTS. Cooldown per
      user prevents flooding when one person is talking continuously. */
   setTranscriptHandler(handleVoiceTranscript);
+  const backgroundTasksEnabled =
+  process.env.ATHENA_BACKGROUND_TASKS === "true";
+
+if (backgroundTasksEnabled) {
 
   /* ── Deep-research worker ─────────────────────────────────────────────
      Drains research_queue every 90s. When new knowledge lands in
