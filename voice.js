@@ -699,7 +699,11 @@ async function processVoiceSample(userId, user, guild, opusChunks, durationMs, s
 
   try {
     /* Decode Opus packets → raw PCM using @discordjs/opus */
-    const encoder = new OpusEncoder(48000, 2);
+    const encoder = new OpusScript(
+  48000,
+  2,
+  OpusScript.Application.AUDIO
+);
     const pcmChunks = [];
     for (const packet of opusChunks) {
       try {
