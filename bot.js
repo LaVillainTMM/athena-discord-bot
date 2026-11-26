@@ -2951,3 +2951,7 @@ client.once(Events.ClientReady, async () => {
 
 /* ---------------- LOGIN ---------------- */
 client.login(process.env.DISCORD_TOKEN);
+
+
+// Initialize Athena's cross-platform gateway
+startAthenaAPI();
