@@ -9,8 +9,7 @@ import {
   entersState,
   EndBehaviorType,
 } from "@discordjs/voice";
-import opusPkg from "@discordjs/opus";
-const { OpusEncoder } = opusPkg;
+import OpusScript from "opusscript";
 import { unlink, writeFileSync } from "fs";
 import { writeFile } from "fs/promises";
 import { execFile } from "child_process";
