@@ -761,11 +761,8 @@ const pcmBuffer = Buffer.concat(pcmChunks);
 
 /* Convert PCM → MP3 for Whisper */
 await pcmToMp3(pcmBuffer, mp3Path);
-    const pcmBuffer = Buffer.concat(pcmChunks);
 
-    /* Convert PCM → MP3 for Whisper */
-    await pcmToMp3(pcmBuffer, mp3Path);
-
+    
     /* Transcribe */
     const transcript = await transcribeWithWhisper(mp3Path);
 
