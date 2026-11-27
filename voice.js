@@ -706,7 +706,15 @@ async function storeVoiceLog(userId, user, guild, { durationMs, transcript, samp
 }
 
 /* Process a captured Opus audio chunk array for one user utterance */
-async function processVoiceSample(userId, user, guild, opusChunks, durationMs, sessionId) {
+async function processVoiceSample(
+  userId,
+  user,
+  guild,
+  opusChunks,
+  durationMs,
+  sessionId,
+  isCurrent
+) {  
   if (opusChunks.length === 0) return;
 
   const ts = Date.now();
