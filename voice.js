@@ -582,7 +582,12 @@ export async function speak(guild, voiceChannel, text) {
 const activeRecordings = new Map(); /* guildId_userId → true */
 
 /* Transcribe an MP3 file using OpenAI Whisper */
+let whisperBlockedUntil = 0;
+
 async function transcribeWithWhisper(mp3FilePath) {
+  if (Date.now() < whisperBlockedUntil) {
+    return null;
+  }
   const openAiKey = process.env.OPENAI_API_KEY;
 
   if (!openAiKey) {
