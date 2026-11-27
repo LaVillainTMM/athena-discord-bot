@@ -541,36 +541,111 @@ function playAndWait(player, resource) {
 }
 
 /* ── Speak text in a voice channel using Azure TTS (fallback: gtts) ── */
-export async function speak(guild, voiceChannel, text) {
-  try {
-    const state = await joinChannel(guild, voiceChannel);
 
-    if (process.env.AZURE_SPEECH_KEY) {
-      /* Azure TTS: generate MP3 file, stream it into Discord */
-      const filepath = `/tmp/voice_${Date.now()}.mp3`;
-      try {
-        await azureTtsToFile(text.substring(0, 5000), filepath);
-        const resource = createAudioResource(filepath, { inputType: StreamType.Arbitrary });
-        await playAndWait(state.player, resource);
-      } finally {
-        unlink(filepath, () => {});
-      }
-    } else {
-      /* Fallback: node-gtts in chunks */
-      const chunks = splitText(text);
-      for (const chunk of chunks) {
-        const stream = await gttsTtsStream(chunk);
-        const resource = createAudioResource(stream, { inputType: StreamType.Arbitrary });
-        await playAndWait(state.player, resource);
-      }
+export async function speak(
+  guild,
+  voiceChannel,
+  text,
+  isCurrent = () => true
+) {
+  try {
+    if (!isCurrent()) return false;
+
+    const state = await joinChannel(
+      guild,
+      voiceChannel
+    );
+
+    if (!isCurrent() || state.speakingNow) {
+      return false;
     }
 
-    return true;
+    state.speakingNow = true;
+
+    try {
+      if (process.env.AZURE_SPEECH_KEY) {
+        const filepath =
+          `/tmp/voice_${Date.now()}.mp3`;
+
+        try {
+          await azureTtsToFile(
+            text.substring(0, 5000),
+            filepath
+          );
+
+          if (!isCurrent()) return false;
+
+          const resource = createAudioResource(
+            filepath,
+            {
+              inputType: StreamType.Arbitrary
+            }
+          );
+
+          console.log(
+            "[VoiceConversation] Athena speaking"
+          );
+
+          await playAndWait(
+            state.player,
+            resource
+          );
+
+        } finally {
+          unlink(filepath, () => {});
+        }
+
+      } else {
+        const chunks = splitText(text);
+
+        for (const chunk of chunks) {
+          if (!isCurrent()) return false;
+
+          const stream = await gttsTtsStream(chunk);
+
+          if (!isCurrent()) {
+            stream.destroy();
+            return false;
+          }
+
+          const resource = createAudioResource(
+            stream,
+            {
+              inputType: StreamType.Arbitrary
+            }
+          );
+
+          console.log(
+            "[VoiceConversation] Athena speaking"
+          );
+
+          await playAndWait(
+            state.player,
+            resource
+          );
+        }
+      }
+
+      return isCurrent();
+
+    } finally {
+      state.speakingNow = false;
+
+      console.log(
+        "[VoiceConversation] Playback finished"
+      );
+    }
+
   } catch (err) {
-    console.error("[Voice] speak() failed:", err.message);
+    console.error(
+      "[Voice] speak() failed:",
+      err.message
+    );
+
     return false;
   }
 }
+
 
 /* ──────────────────────────────────────────────────────
    VOICE LISTENING — listen to users speaking in a voice
