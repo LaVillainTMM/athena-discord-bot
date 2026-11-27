@@ -584,8 +584,15 @@ const activeRecordings = new Map(); /* guildId_userId → true */
 /* Transcribe an MP3 file using OpenAI Whisper */
 async function transcribeWithWhisper(mp3FilePath) {
   const openAiKey = process.env.OPENAI_API_KEY;
-  if (!openAiKey) return null;
 
+  if (!openAiKey) {
+    console.error(
+      "[VoiceListen] OPENAI_API_KEY missing"
+    );
+    return null;
+  }
+
+  console.log("[VoiceListen] Sending audio to Whisper...");
   try {
     const { readFileSync } = await import("fs");
     const audioBytes = readFileSync(mp3FilePath);
