@@ -827,16 +827,41 @@ export function startListeningInChannel(connection, guild, discordClient, sessio
     const key = `${guild.id}_${userId}`;
     if (activeRecordings.has(key)) return;
 
-    try {
-      const user = await discordClient.users.fetch(userId).catch(() => null);
-      if (!user || user.bot) return;
+    activeRecordings.set(key, true);
 
-      activeRecordings.set(key, true);
-      console.log(`[VoiceListen] Recording ${user.username}...`);
+try {
+  const user =
+    discordClient.users.cache.get(userId) ||
+    await discordClient.users.fetch(userId).catch(() => null);
 
-      const opusStream = receiver.subscribe(userId, {
-        end: { behavior: EndBehaviorType.AfterSilence, duration: 1500 },
-      });
+  if (!user || user.bot) {
+    activeRecordings.delete(key);
+    return;
+  }
+
+  const state = voiceConnections.get(guild.id);
+
+  if (!state || state.connection !== connection) {
+    activeRecordings.delete(key);
+    return;
+  }
+
+  let turn = null;
+
+  const isCurrent = () =>
+    turn !== null &&
+    voiceConnections.get(guild.id) === state &&
+    state.turn === turn &&
+    connection.state.status === VoiceConnectionStatus.Ready;
+
+  console.log(`[VoiceListen] Recording ${user.username}...`);
+
+  const opusStream = receiver.subscribe(userId, {
+    end: {
+      behavior: EndBehaviorType.AfterSilence,
+      duration: 900
+    },
+  });
 
       const opusChunks = [];
       const startTime = Date.now();
