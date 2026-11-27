@@ -841,8 +841,22 @@ export function startListeningInChannel(connection, guild, discordClient, sessio
       const opusChunks = [];
       const startTime = Date.now();
 
-      opusStream.on("data", (chunk) => opusChunks.push(chunk));
+      opusStream.on("data", (chunk) => {
+  opusChunks.push(chunk);
 
+  if (turn === null && opusChunks.length >= 15) {
+    turn = (state.turn || 0) + 1;
+    state.turn = turn;
+
+    if (state.speakingNow) {
+      state.player.stop(true);
+
+      console.log(
+        "[VoiceConversation] Playback interrupted by user"
+      );
+    }
+  }
+});
       opusStream.on("end", async () => {
         activeRecordings.delete(key);
         const durationMs = Date.now() - startTime;
