@@ -767,7 +767,7 @@ await pcmToMp3(pcmBuffer, mp3Path);
     const transcript = await transcribeWithWhisper(mp3Path);
 
     /* Store in Firebase — include sessionId so fingerprints link to the session */
-    await storeVoiceLog(userId, user, guild, {
+    void storeVoiceLog(userId, user, guild, {
       durationMs,
       transcript,
       sampleSizeBytes: pcmBuffer.length,
