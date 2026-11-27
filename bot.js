@@ -1007,7 +1007,36 @@ async function getAthenaResponse(content, athenaUserId, discordUserId, channel, 
     console.warn(`[MusicAnalytics] Roster digest skipped: ${err.message}`);
   }
 
-  const fullMessage = liveContext + locationBlock + knowledgeBlock + weatherBlock + nearbyBlock + placesBlock + labelBlock + voiceAwareness + serverContext + content;
+  const voiceInstructions = options.voice
+  ? `
+VOICE CONVERSATION MODE:
+
+- Respond naturally and conversationally.
+- Use one to three short sentences.
+- Address the user's latest statement.
+- Avoid repeating previous responses.
+- Do not return to unrelated earlier topics.
+- Do not unnecessarily repeat the user's name.
+- Do not repeatedly announce that you are listening.
+- Do not claim actions you have not performed.
+- Avoid unnecessary introductions and conclusions.
+- Provide longer explanations only when requested.
+
+`
+  : "";
+
+const fullMessage =
+  voiceInstructions +
+  liveContext +
+  locationBlock +
+  knowledgeBlock +
+  weatherBlock +
+  nearbyBlock +
+  placesBlock +
+  labelBlock +
+  voiceAwareness +
+  serverContext +
+  content;
 
   let reply;
   try {
