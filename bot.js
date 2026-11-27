@@ -1208,45 +1208,215 @@ async function hasDuhRole(userId) {
    pipeline so the same persona / knowledge / Duh-role gate
    apply to voice exactly like text.
 ────────────────────────────────────────────────────── */
-const voiceReplyCooldown = new Map(); /* userId → lastReplyAt(ms) */
-const VOICE_REPLY_COOLDOWN_MS = 6_000;
-const VOICE_NAME_RX = /\b(athena|atina|athina|athene)\b/i;
 
-async function handleVoiceTranscript({ user, userId, guild, channel, transcript }) {
-  if (!transcript || transcript.length < 2) return;
-  if (!guild || !channel) return;
+const voiceTurns = new Map();
 
-  /* Decide if this utterance was directed at Athena. */
-  const humans = [...channel.members.values()].filter(m => !m.user.bot).length;
-  const addressed = VOICE_NAME_RX.test(transcript) || humans <= 1;
-  if (!addressed) return;
+const VOICE_NAME_RX =
+  /\b(athena|atina|athina|athene)\b/i;
 
-  /* Cooldown */
-  const last = voiceReplyCooldown.get(userId) || 0;
-  if (Date.now() - last < VOICE_REPLY_COOLDOWN_MS) return;
-  voiceReplyCooldown.set(userId, Date.now());
-
-  console.log(`[VoiceListen] Athena addressed by ${user.username}: "${transcript.substring(0, 80)}"`);
-
-  /* Duh-role gate also applies to voice. */
-  if (requiresDuhRole(transcript) && !(await hasDuhRole(userId))) {
-    await speak(guild, channel,
-      `Sorry ${user.username}, business and label talk is reserved for members with the Duh tag. Catch me on something else.`
-    ).catch(() => {});
+async function handleVoiceTranscript({
+  user,
+  userId,
+  guild,
+  channel,
+  transcript,
+  isCurrent = () => true
+}) {
+  if (!guild || !channel || !isCurrent()) {
     return;
   }
 
+  const normalized = transcript
+    ?.toLowerCase()
+    .replace(/[^a-z0-9 ]/g, "")
+    .trim();
+
+  // Ignore common incomplete transcripts.
+  if (
+    !normalized ||
+    /^(you|uh|um|hmm)$/.test(normalized)
+  ) {
+    console.log(
+      "[VoiceConversation] Incomplete transcript ignored"
+    );
+
+    return;
+  }
+
+  const humans = [...channel.members.values()]
+    .filter(member => !member.user.bot)
+    .length;
+
+  // In group conversations, require Athena's name.
+  if (
+    !VOICE_NAME_RX.test(transcript) &&
+    humans > 1
+  ) {
+    return;
+  }
+
+  let state = voiceTurns.get(guild.id);
+
+  if (!state) {
+    state = {
+      busy: false,
+      pending: null,
+      last: null
+    };
+
+    voiceTurns.set(guild.id, state);
+  }
+
+  // Prevent repeated transcripts.
+  if (
+    state.last?.text === normalized &&
+    state.last?.userId === userId &&
+    Date.now() - state.last.at < 5000
+  ) {
+    console.log(
+      "[VoiceConversation] Duplicate transcript ignored"
+    );
+
+    return;
+  }
+
+  state.last = {
+    text: normalized,
+    userId,
+    at: Date.now()
+  };
+
+  // Handle stop commands without calling Gemini.
+  if (
+    /^(stop|athena stop|be quiet)$/.test(normalized)
+  ) {
+    state.pending = null;
+
+    console.log(
+      "[VoiceConversation] Stop command received"
+    );
+
+    return;
+  }
+
+  // Prioritize the newest conversation turn.
+  state.pending = {
+    user,
+    userId,
+    guild,
+    channel,
+    transcript,
+    isCurrent
+  };
+
+  if (state.busy) {
+    console.log(
+      "[VoiceConversation] Latest turn queued"
+    );
+
+    return;
+  }
+
+  state.busy = true;
+
   try {
-    const athenaUserId = await getOrCreateAthenaUser(user);
-    let reply = await getAthenaResponse(transcript, athenaUserId, userId, channel, guild);
-    if (!reply || !reply.trim()) return;
-    /* Trim for spoken reply — long answers turn into multi-minute audio. */
-    if (reply.length > 600) reply = reply.substring(0, 600).replace(/\s+\S*$/, "") + "...";
-    await speak(guild, channel, reply);
-  } catch (err) {
-    console.error("[VoiceListen] reply generation failed:", err.message);
+    while (state.pending) {
+      const turn = state.pending;
+
+      state.pending = null;
+
+      if (!turn.isCurrent()) {
+        continue;
+      }
+
+      try {
+        // Preserve existing business access rules.
+        if (
+          requiresDuhRole(turn.transcript) &&
+          !(await hasDuhRole(turn.userId))
+        ) {
+          if (turn.isCurrent()) {
+            await speak(
+              turn.guild,
+              turn.channel,
+              "That topic requires the Duh tag.",
+              turn.isCurrent
+            );
+          }
+
+          continue;
+        }
+
+        const athenaUserId =
+          await getOrCreateAthenaUser(turn.user);
+
+        if (!turn.isCurrent()) {
+          continue;
+        }
+
+        console.log(
+          "[VoiceConversation] Athena thinking"
+        );
+
+        const startedAt = Date.now();
+
+        const reply = await getAthenaResponse(
+          turn.transcript,
+          athenaUserId,
+          turn.userId,
+          turn.channel,
+          turn.guild,
+          {
+            voice: true,
+            isCurrent: turn.isCurrent
+          }
+        );
+
+        console.log(
+          `[VoiceConversation] Processing completed in ${
+            Date.now() - startedAt
+          }ms`
+        );
+
+        if (!turn.isCurrent()) {
+          console.log(
+            "[VoiceConversation] Outdated response discarded"
+          );
+
+          continue;
+        }
+
+        if (!reply?.trim()) {
+          continue;
+        }
+
+        const spokenReply =
+          reply.length > 400
+            ? reply
+                .slice(0, 400)
+                .replace(/\s+\S*$/, "") + "..."
+            : reply;
+
+        await speak(
+          turn.guild,
+          turn.channel,
+          spokenReply,
+          turn.isCurrent
+        );
+
+      } catch (err) {
+        console.error(
+          "[VoiceListen] reply failed:",
+          err.message
+        );
+      }
+    }
+
+  } finally {
+    state.busy = false;
   }
 }
+
 
 /* ---------------- MESSAGE HANDLER ---------------- */
 /* ──────────────────────────────────────────────────────
