@@ -848,10 +848,10 @@ export function startListeningInChannel(connection, guild, discordClient, sessio
         const durationMs = Date.now() - startTime;
 
         /* Ignore very short clips — noise/blips */
-        if (durationMs < 300 || opusChunks.length < 3) return;
+        if (opusChunks.length < 20 || !isCurrent()) return;
 
-        processVoiceSample(userId, user, guild, opusChunks, durationMs, sessionId).catch((err) =>
-          console.error("[VoiceListen] Async processVoiceSample error:", err.message)
+processVoiceSample(userId, user, guild, opusChunks, durationMs, sessionId, isCurrent).catch((err) =>
+  console.error("[VoiceListen] Async processVoiceSample error:", err.message)
         );
       });
 
