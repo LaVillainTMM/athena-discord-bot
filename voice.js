@@ -698,20 +698,50 @@ async function processVoiceSample(userId, user, guild, opusChunks, durationMs, s
   const mp3Path = `/tmp/voice_${userId}_${ts}.mp3`;
 
   try {
-    /* Decode Opus packets → raw PCM using @discordjs/opus */
-    const pcmChunks = [];
+    
+/* Decode Discord Opus packets into raw PCM using OpusScript */
+const pcmChunks = [];
+
+const encoder = new OpusScript(
+  48000,
+  2,
+  OpusScript.Application.AUDIO
+);
+
+let failedPackets = 0;
 
 try {
   for (const packet of opusChunks) {
     try {
-      const decoded = encoder.decode(packet);
-      pcmChunks.push(Buffer.from(decoded));
-    } catch (_) {
-      // Skip malformed audio packets.
+      const decoded = encoder.decode(Buffer.from(packet));
+
+      if (decoded && decoded.length > 0) {
+        pcmChunks.push(Buffer.from(decoded));
+      }
+    } catch (error) {
+      failedPackets++;
+
+      if (failedPackets === 1) {
+        console.warn(
+          "[VoiceListen] Opus decoding error:",
+          error.message
+        );
+      }
     }
   }
 } finally {
   encoder.delete();
+}
+
+if (pcmChunks.length === 0) {
+  console.warn("[VoiceListen] No valid audio decoded");
+  return;
+}
+
+console.log(
+  `[VoiceListen] Decoded ${pcmChunks.length}/${opusChunks.length} audio packets`
+);
+
 }
 
 if (pcmChunks.length === 0) return;
