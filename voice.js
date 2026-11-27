@@ -778,7 +778,12 @@ await pcmToMp3(pcmBuffer, mp3Path);
        Athena should speak back. Fire-and-forget; failures must not block the
        voice loop. The callback receives everything it needs to reply in the
        same channel and to know who spoke. */
-    if (onTranscriptCallback && transcript && transcript.trim()) {
+    if (
+  isCurrent() &&
+  onTranscriptCallback &&
+  transcript &&
+  transcript.trim()
+) {
       const channelId = voiceConnections.get(guild.id)?.channelId;
       const channel   = channelId ? guild.channels.cache.get(channelId) : null;
       Promise.resolve()
