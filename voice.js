@@ -812,8 +812,9 @@ async function processVoiceSample(
   opusChunks,
   durationMs,
   sessionId,
-  isCurrent
-) {  
+  isCurrent,
+  acceptTurn
+) {
   if (opusChunks.length === 0) return;
 
   const ts = Date.now();
