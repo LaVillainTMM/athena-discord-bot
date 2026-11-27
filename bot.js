@@ -1445,13 +1445,299 @@ async function handleVoiceTranscript({
         await speak(
           turn.guild,
           turn.channel,
+
+const voiceTurns = new Map();
+
+const VOICE_NAME_RX =
+  /\b(athena|atina|athina|athene)\b/i;
+
+const VOICE_FOLLOWUP_MS = 30000;
+const VOICE_DUPLICATE_MS = 15000;
+const VOICE_MAX_QUEUE_AGE_MS = 15000;
+
+function normalizeVoiceText(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function handleVoiceTranscript({
+  user,
+  userId,
+  guild,
+  channel,
+  transcript,
+  sessionId,
+  isCurrent,
+  acceptTurn
+}) {
+  if (
+    !guild ||
+    !channel ||
+    !isCurrent?.() ||
+    !acceptTurn
+  ) {
+    return;
+  }
+
+  if (!channel.members.has(userId)) {
+    return;
+  }
+
+  const normalized =
+    normalizeVoiceText(transcript);
+
+  const addressed =
+    VOICE_NAME_RX.test(transcript);
+
+  if (
+    !normalized ||
+    /^(you|uh|um|hmm|oof)$/.test(normalized)
+  ) {
+    console.log(
+      "[VoiceConversation] Fragment ignored"
+    );
+    return;
+  }
+
+  const humans = [...channel.members.values()]
+    .filter(member => !member.user.bot)
+    .length;
+
+  const sessionKey =
+    `${channel.id}:${sessionId || "unknown"}`;
+
+  let state = voiceTurns.get(guild.id);
+
+  if (!state || state.sessionKey !== sessionKey) {
+    state = {
+      sessionKey,
+      busy: false,
+      pending: null,
+      activeUser: null,
+      activeUntil: 0,
+      recentInputs: new Map(),
+      recentReplies: new Map()
+    };
+
+    voiceTurns.set(guild.id, state);
+  }
+
+  const now = Date.now();
+
+  const followup =
+    state.activeUser === userId &&
+    now < state.activeUntil;
+
+  const stopCommand =
+    /^(athena stop|athena be quiet|stop|be quiet|stop talking)$/
+      .test(normalized);
+
+  // Require direct engagement before responding.
+  if (!addressed && !followup) {
+    console.log(
+      "[VoiceConversation] Background speech ignored"
+    );
+    return;
+  }
+
+  // Handle intentional stop commands.
+  if (stopCommand) {
+    acceptTurn();
+
+    state.pending = null;
+    state.activeUser = null;
+    state.activeUntil = 0;
+
+    console.log(
+      "[VoiceConversation] Stop command accepted"
+    );
+
+    return;
+  }
+
+  // Reject common transcription artifacts
+  // unless Athena was explicitly addressed.
+  if (
+    !addressed &&
+    /^(bye|bye bye|thank you|thanks for watching|thank you very much)$/
+      .test(normalized)
+  ) {
+    return;
+  }
+
+  // Remove expired duplicate records.
+  for (const [key, time] of state.recentInputs) {
+    if (now - time > VOICE_DUPLICATE_MS) {
+      state.recentInputs.delete(key);
+    }
+  }
+
+  const inputKey = `${userId}:${normalized}`;
+
+  if (state.recentInputs.has(inputKey)) {
+    console.log(
+      "[VoiceConversation] Duplicate request ignored"
+    );
+    return;
+  }
+
+  // Only validated speech advances the turn.
+  const currentTurn = acceptTurn();
+
+  if (!currentTurn) return;
+
+  state.recentInputs.set(inputKey, now);
+
+  state.activeUser = userId;
+  state.activeUntil = now + VOICE_FOLLOWUP_MS;
+
+  state.pending = {
+    user,
+    userId,
+    guild,
+    channel,
+    transcript,
+    receivedAt: now,
+    isCurrent: () =>
+      currentTurn() &&
+      voiceTurns.get(guild.id) === state &&
+      channel.members.has(userId)
+  };
+
+  console.log(
+    `[VoiceConversation] Accepted request; humans=${humans}`
+  );
+
+  if (state.busy) {
+    console.log(
+      "[VoiceConversation] Latest valid request queued"
+    );
+    return;
+  }
+
+  state.busy = true;
+
+  try {
+    while (state.pending) {
+      const turn = state.pending;
+
+      state.pending = null;
+
+      if (
+        !turn.isCurrent() ||
+        Date.now() - turn.receivedAt >
+          VOICE_MAX_QUEUE_AGE_MS
+      ) {
+        console.log(
+          "[VoiceConversation] Expired request discarded"
+        );
+        continue;
+      }
+
+      try {
+        if (
+          requiresDuhRole(turn.transcript) &&
+          !(await hasDuhRole(turn.userId))
+        ) {
+          if (turn.isCurrent()) {
+            await speak(
+              turn.guild,
+              turn.channel,
+              "That topic requires the Duh tag.",
+              turn.isCurrent
+            );
+          }
+
+          continue;
+        }
+
+        const athenaUserId =
+          await getOrCreateAthenaUser(turn.user);
+
+        if (!turn.isCurrent()) continue;
+
+        console.log(
+          "[VoiceConversation] Athena thinking"
+        );
+
+        const startedAt = Date.now();
+
+        const reply = await getAthenaResponse(
+          turn.transcript,
+          athenaUserId,
+          turn.userId,
+          turn.channel,
+          turn.guild,
+          {
+            voice: true,
+            isCurrent: turn.isCurrent
+          }
+        );
+
+        console.log(
+          `[VoiceConversation] Processing completed in ${
+            Date.now() - startedAt
+          }ms`
+        );
+
+        if (!turn.isCurrent()) {
+          console.log(
+            "[VoiceConversation] Outdated response discarded"
+          );
+          continue;
+        }
+
+        if (!reply?.trim()) continue;
+
+        const spokenReply =
+          reply.length > 400
+            ? reply
+                .slice(0, 400)
+                .replace(/\s+\S*$/, "") + "..."
+            : reply;
+
+        const replyKey =
+          normalizeVoiceText(spokenReply);
+
+        const replyTime = Date.now();
+
+        for (const [key, time] of state.recentReplies) {
+          if (replyTime - time > VOICE_DUPLICATE_MS) {
+            state.recentReplies.delete(key);
+          }
+        }
+
+        if (state.recentReplies.has(replyKey)) {
+          console.log(
+            "[VoiceConversation] Duplicate reply suppressed"
+          );
+          continue;
+        }
+
+        state.recentReplies.set(
+          replyKey,
+          replyTime
+        );
+
+        const completed = await speak(
+          turn.guild,
+          turn.channel,
           spokenReply,
           turn.isCurrent
         );
 
+        if (completed && turn.isCurrent()) {
+          state.activeUser = turn.userId;
+          state.activeUntil =
+            Date.now() + VOICE_FOLLOWUP_MS;
+        }
+
       } catch (err) {
         console.error(
-          "[VoiceListen] reply failed:",
+          "[VoiceConversation] Response failed:",
           err.message
         );
       }
