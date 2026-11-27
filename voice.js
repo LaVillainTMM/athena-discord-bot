@@ -610,10 +610,23 @@ async function transcribeWithWhisper(mp3FilePath) {
     });
 
     if (!res.ok) {
-      const errText = await res.text();
-      console.error(`[VoiceListen] Whisper error ${res.status}:`, errText.substring(0, 150));
-      return null;
-    }
+  const errText = await res.text();
+
+  if (res.status === 429) {
+    whisperBlockedUntil = Date.now() + 60000;
+
+    console.warn(
+      "[VoiceListen] Whisper unavailable. Pausing requests for 60 seconds."
+    );
+  }
+
+  console.error(
+    `[VoiceListen] Whisper error ${res.status}:`,
+    errText.substring(0, 150)
+  );
+
+  return null;
+}
 
     const data = await res.json();
     const transcript = data.text?.trim() || null;
