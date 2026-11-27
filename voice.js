@@ -899,6 +899,7 @@ await pcmToMp3(pcmBuffer, mp3Path);
           sessionId: sessionId || null,
 durationMs,
 isCurrent,
+acceptTurn,
         }))
         .catch(err => console.error("[VoiceListen] Active-listen handler error:", err.message));
     }
