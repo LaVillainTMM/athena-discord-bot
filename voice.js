@@ -784,7 +784,9 @@ await pcmToMp3(pcmBuffer, mp3Path);
       Promise.resolve()
         .then(() => onTranscriptCallback({
           user, userId, guild, channel, transcript: transcript.trim(),
-          sessionId: sessionId || null, durationMs,
+          sessionId: sessionId || null,
+durationMs,
+isCurrent,
         }))
         .catch(err => console.error("[VoiceListen] Active-listen handler error:", err.message));
     }
