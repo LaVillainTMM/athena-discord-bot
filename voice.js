@@ -757,10 +757,10 @@ console.log(
   `[VoiceListen] Decoded ${pcmChunks.length}/${opusChunks.length} audio packets`
 );
 
-}
+const pcmBuffer = Buffer.concat(pcmChunks);
 
-if (pcmChunks.length === 0) return;
-
+/* Convert PCM → MP3 for Whisper */
+await pcmToMp3(pcmBuffer, mp3Path);
     const pcmBuffer = Buffer.concat(pcmChunks);
 
     /* Convert PCM → MP3 for Whisper */
