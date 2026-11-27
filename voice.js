@@ -616,7 +616,15 @@ async function transcribeWithWhisper(mp3FilePath) {
     }
 
     const data = await res.json();
-    return data.text?.trim() || null;
+    const transcript = data.text?.trim() || null;
+
+if (transcript) {
+  console.log("[VoiceListen] Transcription successful");
+} else {
+  console.warn("[VoiceListen] Empty transcription");
+}
+
+return transcript;
   } catch (err) {
     console.error("[VoiceListen] Whisper transcription failed:", err.message);
     return null;
