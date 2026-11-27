@@ -1051,9 +1051,18 @@ async function getAthenaResponse(content, athenaUserId, discordUserId, channel, 
 
   /* Only persist a real response — empty/whitespace replies would poison
      future context and cause the same dead fallback to repeat forever. */
-  if (reply && reply.trim()) {
-    await saveMessage(athenaUserId, discordUserId, content, reply);
-  }
+  if (
+  reply &&
+  reply.trim() &&
+  (!options.isCurrent || options.isCurrent())
+) {
+  await saveMessage(
+    athenaUserId,
+    discordUserId,
+    content,
+    reply
+  );
+}
   return reply;
 }
 
