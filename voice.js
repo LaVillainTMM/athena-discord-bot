@@ -603,11 +603,17 @@ async function transcribeWithWhisper(mp3FilePath) {
     form.set("model", "whisper-1");
     form.set("language", "en");
 
-    const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${openAiKey}` },
-      body: form,
-    });
+    const res = await fetch(
+  "https://api.openai.com/v1/audio/transcriptions",
+  {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${openAiKey}`
+    },
+    body: form,
+    signal: AbortSignal.timeout(20000),
+  }
+);
 
     if (!res.ok) {
   const errText = await res.text();
