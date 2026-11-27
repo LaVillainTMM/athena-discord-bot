@@ -1006,7 +1006,16 @@ const acceptTurn = () => {
         /* Ignore very short clips — noise/blips */
         if (opusChunks.length < 20 || !isCurrent()) return;
 
-processVoiceSample(userId, user, guild, opusChunks, durationMs, sessionId, isCurrent).catch((err) =>
+processVoiceSample(
+  userId,
+  user,
+  guild,
+  opusChunks,
+  durationMs,
+  sessionId,
+  isCurrent,
+  acceptTurn
+).catch((err) =>
   console.error("[VoiceListen] Async processVoiceSample error:", err.message)
         );
       });
