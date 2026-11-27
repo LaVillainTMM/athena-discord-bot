@@ -832,7 +832,14 @@ client.on(Events.GuildMemberAdd, async member => {
 });
 
 /* ---------------- AI RESPONSE ---------------- */
-async function getAthenaResponse(content, athenaUserId, discordUserId, channel, guild) {
+async function getAthenaResponse(
+  content,
+  athenaUserId,
+  discordUserId,
+  channel,
+  guild,
+  options = {}
+) {
   console.log(`[Athena] Processing message from ${athenaUserId}: "${content.substring(0, 50)}..."`);
 
   /* detect if this is a history/summary request before fetching context */
