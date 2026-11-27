@@ -960,14 +960,30 @@ try {
     return;
   }
 
-  let turn = null;
-
   const isCurrent = () =>
-    turn !== null &&
-    voiceConnections.get(guild.id) === state &&
-    state.turn === turn &&
-    connection.state.status === VoiceConnectionStatus.Ready;
+  voiceConnections.get(guild.id) === state &&
+  state.connection === connection &&
+  connection.state.status === VoiceConnectionStatus.Ready;
 
+const acceptTurn = () => {
+  if (!isCurrent()) return null;
+
+  const acceptedTurn = (state.turn || 0) + 1;
+
+  state.turn = acceptedTurn;
+
+  if (state.speakingNow) {
+    state.player.stop(true);
+
+    console.log(
+      "[VoiceConversation] Validated interruption"
+    );
+  }
+
+  return () =>
+    isCurrent() &&
+    state.turn === acceptedTurn;
+};
   console.log(`[VoiceListen] Recording ${user.username}...`);
 
   const opusStream = receiver.subscribe(userId, {
