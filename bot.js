@@ -1431,20 +1431,6 @@ async function handleVoiceTranscript({
           continue;
         }
 
-        if (!reply?.trim()) {
-          continue;
-        }
-
-        const spokenReply =
-          reply.length > 400
-            ? reply
-                .slice(0, 400)
-                .replace(/\s+\S*$/, "") + "..."
-            : reply;
-
-        await speak(
-          turn.guild,
-          turn.channel,
 
 const voiceTurns = new Map();
 
